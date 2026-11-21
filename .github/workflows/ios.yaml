@@ -55,8 +55,6 @@ jobs:
                   replacements += count
                   print(f"Patched {count} explicit_bzero call(s) in {path}")
 
-           print(f"Patched {replacements} additional explicit_bzero call(s)")
-
           print(f"Patched {replacements} additional explicit_bzero call(s)")
           PY
 
