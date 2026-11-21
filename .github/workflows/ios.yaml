@@ -1,1 +1,87 @@
 
+name: iOS unsigned build and artifact validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: brew install ninja ccache
+
+      - name: Configure iOS build
+        run: >
+          cmake -S . -B build-ios -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME=iOS
+          -DCMAKE_OSX_SYSROOT=iphoneos
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY=""
+          -DENABLE_TESTS=OFF
+          -DENABLE_ROOM=OFF
+          -DENABLE_ROOM_STANDALONE=OFF
+          -DENABLE_LIBUSB=OFF
+          -DENABLE_CUBEB=OFF
+          -DENABLE_FFMPEG=OFF
+          -DENABLE_DISCORD_RPC=OFF
+          -DCITRA_USE_PRECOMPILED_HEADERS=OFF
+
+      - name: Build iOS target
+        run: cmake --build build-ios --parallel 3 --target citra_meta
+
+      - name: Validate app bundle
+        run: |
+          set -euo pipefail
+          app_path="$(find build-ios -type d -name 'azahar.app' -print -quit)"
+          test -n "$app_path"
+          test -f "$app_path/Info.plist"
+          plutil -lint "$app_path/Info.plist"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")"
+          test -f "$app_path/$executable"
+          lipo -verify_arch arm64 "$app_path/$executable"
+          echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/Payload
+          ditto "$APP_PATH" artifacts/Payload/azahar.app
+          cd artifacts
+          /usr/bin/zip -qry azahar-ios-unsigned.ipa Payload
+          unzip -t azahar-ios-unsigned.ipa
+          test -s azahar-ios-unsigned.ipa
+
+      - name: Validate unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf ipa-validation
+          mkdir ipa-validation
+          unzip -q artifacts/azahar-ios-unsigned.ipa -d ipa-validation
+          test -d ipa-validation/Payload/azahar.app
+          test -f ipa-validation/Payload/azahar.app/Info.plist
+          plutil -lint ipa-validation/Payload/azahar.app/Info.plist
+          test ! -e ipa-validation/Payload/azahar.app/embedded.mobileprovision
+          echo "Unsigned IPA structure validated."
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-ios-unsigned-${{ github.sha }}
+          path: artifacts/azahar-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
