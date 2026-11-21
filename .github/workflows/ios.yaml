@@ -16,6 +16,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Show Apple build environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          cmake --version
+
       - name: Patch LibreSSL for iOS
         run: |
           python3 - <<'PY'
@@ -89,17 +96,24 @@ jobs:
         run: |
           set -euo pipefail
           app_path="$(find build-ios -type d -name 'azahar.app' -print -quit)"
-          test -n "$app_path"
+          if [[ -z "$app_path" ]]; then
+            echo "::error::No azahar.app bundle was produced. Build outputs:"
+            find build-ios -maxdepth 6 -print | sed -n '1,200p'
+            exit 1
+          fi
           test -f "$app_path/Info.plist"
           plutil -lint "$app_path/Info.plist"
           executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")"
           test -f "$app_path/$executable"
+          archs="$(lipo -archs "$app_path/$executable")"
+          test "$archs" = "arm64"
           lipo -verify_arch arm64 "$app_path/$executable"
           echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
 
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
+          rm -rf artifacts
           mkdir -p artifacts/Payload
           ditto "$APP_PATH" artifacts/Payload/azahar.app
           cd artifacts
@@ -124,5 +138,5 @@ jobs:
         with:
           name: azahar-ios-unsigned-${{ github.sha }}
           path: artifacts/azahar-ios-unsigned.ipa
-          if-no-found: error
+          if-no-files-found: error
           retention-days: 14
