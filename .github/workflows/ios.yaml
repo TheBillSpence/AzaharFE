@@ -30,7 +30,7 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
-                - name: Patch LibreSSL memory clearing for iOS
+      - name: Patch LibreSSL memory clearing for iOS
         run: |
           python3 - <<'PY'
           from pathlib import Path
