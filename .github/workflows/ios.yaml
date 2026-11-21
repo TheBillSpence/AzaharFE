@@ -16,6 +16,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+                - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Patch LibreSSL syslog for iOS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("externals/libressl/crypto/cryptlib.c")
+          s = p.read_text()
+          old = "\tstruct syslog_data sdata = SYSLOG_DATA_INIT;\n\tva_list ap;\n\n\tva_start(ap, fmta);\n\tvsyslog_r(LOG_INFO|LOG_LOCAL2, &sdata, fmta, ap);\n\tva_end(ap);"
+          new = "\tva_list ap;\n\n\tva_start(ap, fmta);\n\tvsyslog(LOG_INFO|LOG_LOCAL2, fmta, ap);\n\tva_end(ap);"
+          if old not in s:
+              raise SystemExit("LibreSSL syslog block not found")
+          p.write_text(s.replace(old, new, 1))
+          PY
 
       - name: Install tools
         run: brew install ninja ccache
