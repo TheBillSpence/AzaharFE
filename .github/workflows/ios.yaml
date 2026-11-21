@@ -30,6 +30,19 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
+                - name: Patch LibreSSL memory clearing for iOS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("externals/libressl/crypto/mem_clr.c")
+          s = p.read_text()
+          old = "explicit_bzero(ptr, len);"
+          new = "memset(ptr, 0, len);"
+          if old not in s:
+              raise SystemExit("mem_clr.c fallback not found")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
       - name: Install tools
         run: brew install ninja ccache
 
