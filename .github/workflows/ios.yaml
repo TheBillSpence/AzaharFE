@@ -16,30 +16,54 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Patch LibreSSL syslog for iOS
+      - name: Patch LibreSSL for iOS
         run: |
           python3 - <<'PY'
+          import re
           from pathlib import Path
-          p = Path("externals/libressl/crypto/cryptlib.c")
-          s = p.read_text()
+
+          root = Path("externals/libressl")
+
+          cryptlib = root / "crypto/cryptlib.c"
+          s = cryptlib.read_text()
           old = "\tstruct syslog_data sdata = SYSLOG_DATA_INIT;\n\tva_list ap;\n\n\tva_start(ap, fmta);\n\tvsyslog_r(LOG_INFO|LOG_LOCAL2, &sdata, fmta, ap);\n\tva_end(ap);"
           new = "\tva_list ap;\n\n\tva_start(ap, fmta);\n\tvsyslog(LOG_INFO|LOG_LOCAL2, fmta, ap);\n\tva_end(ap);"
           if old not in s:
               raise SystemExit("LibreSSL syslog block not found")
-          p.write_text(s.replace(old, new, 1))
-          PY
+          cryptlib.write_text(s.replace(old, new, 1))
 
-      - name: Patch LibreSSL memory clearing for iOS
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("externals/libressl/crypto/mem_clr.c")
-          s = p.read_text()
+          memclr = root / "crypto/mem_clr.c"
+          s = memclr.read_text()
           old = "\texplicit_bzero(ptr, len);"
           new = "\tvolatile unsigned char *p = (volatile unsigned char *)ptr;\n\twhile (len-- > 0)\n\t\t*p++ = 0;"
           if old not in s:
               raise SystemExit("LibreSSL mem_clr.c explicit_bzero call not found")
-          p.write_text(s.replace(old, new, 1))
+          memclr.write_text(s.replace(old, new, 1))
+
+          replacements = 0
+          for path in root.rglob("*.c"):
+              if path == memclr:
+                  continue
+              s = path.read_text()
+              updated, count = re.subn(
+                  r"explicit_bzero\s*\(([^;]*?)\s*,\s*([^;]*?)\);",
+                  r"memset(\1, 0, \2);",
+                  s,
+              )
+              if count:
+                  path.write_text(updated)
+                  replacements += count
+                  print(f"Patched {count} explicit_bzero call(s) in {path}")
+
+          remaining = []
+          for path in root.rglob("*"):
+              if path.is_file() and path.suffix in {".c", ".h"}:
+                  if "explicit_bzero" in path.read_text(errors="ignore"):
+                      remaining.append(str(path))
+          if remaining:
+              raise SystemExit("Remaining explicit_bzero references: " + ", ".join(remaining))
+
+          print(f"Patched {replacements} additional explicit_bzero call(s)")
           PY
 
       - name: Install tools
@@ -108,5 +132,5 @@ jobs:
         with:
           name: azahar-ios-unsigned-${{ github.sha }}
           path: artifacts/azahar-ios-unsigned.ipa
-          if-no-files-found: error
+          if-no-found: error
           retention-days: 14
