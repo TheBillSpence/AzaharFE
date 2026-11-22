@@ -79,7 +79,7 @@ add_library(citra_common STATIC EXCLUDE_FROM_ALL
     serialization/boost_discrete_interval.hpp
     serialization/boost_flat_set.h
     serialization/boost_small_vector.hpp
-    serialization/boost_std_vector.hpp
+    serialization/boost_std_variant.hpp
     serialization/boost_vector.hpp
     static_lru_cache.h
     string_literal.h
@@ -108,7 +108,7 @@ add_library(citra_common STATIC EXCLUDE_FROM_ALL
     x64/xbyak_util.h
     zstd_compression.cpp
     zstd_compression.h
-  )
+)
 
 target_include_directories(citra_common PUBLIC ${CMAKE_BINARY_DIR}/src)
 
