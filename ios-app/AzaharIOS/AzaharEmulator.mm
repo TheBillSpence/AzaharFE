@@ -10,6 +10,7 @@
 #include <thread>
 #include <mach/mach.h>
 #include <mach/vm_map.h>
+#include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "libretro.h"
@@ -31,7 +32,7 @@ static void *AzaharUniversalJITRegion(void *, size_t) {
                      "brk #0xf00d\n"
                      "ret\n");
 }
-static bool AzaharProbeJITMapping() {
+static bool AzaharProbeJITMapping(void (^report)(NSString *)) {
     // A BRK without the universal script attached may crash. Test JIT ON only.
     if (!AzaharDebuggerIsEnabled()) return false;
     if (@available(iOS 27.0, *)) {
@@ -51,7 +52,33 @@ static bool AzaharProbeJITMapping() {
         if (ok) {
             ok = vm_protect(mach_task_self(), rw, (vm_size_t)size, FALSE,
                             VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
+            if (ok) {
+                // Test actual ARM64 execution through the RX mapping. A
+                // successful vm_remap alone proves nothing about TXM.
+                // mov x0, #42; ret -- the A13 executes normal arm64 code in
+                // our arm64-signed iOS binary (arm64e device is compatible).
+                if (report) report(@"2b/7 RW/RX mappings ready; writing ARM64 test");
+                auto *code = reinterpret_cast<uint32_t *>(rw);
+                code[0] = 0xD2800540U;
+                code[1] = 0xD65F03C0U;
+                // Synchronize both virtual aliases of the same physical pages.
+                sys_icache_invalidate(reinterpret_cast<void *>(rw), 8);
+                sys_icache_invalidate(rx, 8);
+                if (report) report(@"2c/7 Executing ARM64 test in RX memory");
+                using JITTest = uint64_t (*)();
+                uint64_t value = reinterpret_cast<JITTest>(rx)();
+                if (report) {
+                    report([NSString stringWithFormat:
+                        @"2d/7 ARM64 RX test returned %llu (expected 42)",
+                        static_cast<unsigned long long>(value)]);
+                }
+                ok = value == 42;
+            } else if (report) {
+                report(@"2b/7 Writable alias protection failed");
+            }
             vm_deallocate(mach_task_self(), rw, (vm_size_t)size);
+        } else if (report) {
+            report(@"2b/7 vm_remap failed");
         }
         munmap(rx, size);
         return ok;
@@ -257,7 +284,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             }
             // The breakpoint must be handled by universal.js. If it stalls,
             // the last durable log entry will identify this exact operation.
-            _jitEnabled = debugged && AzaharProbeJITMapping();
+            _jitEnabled = debugged && AzaharProbeJITMapping(^(NSString *message) {
+                [self reportJITStage:message];
+            });
             if (_jitEnabled) {
                 [self reportJITStage:@"3/7 JIT mapping prepared; initializing core"];
             } else if (debugged) {
