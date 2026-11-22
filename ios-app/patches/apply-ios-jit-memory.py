@@ -41,8 +41,10 @@ class CodeBlock {""",
 )
 source = replace(
     source,
+    "#    if TARGET_OS_IPHONE\\n"
     "        m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);",
-    """        // StikDebug universal.js must grant TXM-executable pages on iOS 27.
+    """#    if TARGET_OS_IPHONE
+        // StikDebug universal.js must grant TXM-executable pages on iOS 27.
         // The NULL address triggers debugserver allocation and page preparation.
         m_memory = (std::uint32_t*)AzaharRequestUniversalJITRegion(nullptr, size);
         const auto address = reinterpret_cast<std::uintptr_t>(m_memory);
