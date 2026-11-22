@@ -261,7 +261,7 @@ jobs:
           echo "Library: $library"
           echo "Architectures: $archs"
 
-          lipo -verify_arch arm64 "$library"
+          lipo "$library" -verify_arch arm64
 
           mkdir -p artifacts
 
