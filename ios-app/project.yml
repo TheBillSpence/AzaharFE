@@ -1,0 +1,42 @@
+name: AzaharIOS
+
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "14.0"
+
+targets:
+  AzaharIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: AzaharIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios
+        PRODUCT_NAME: AzaharIOS
+        INFOPLIST_FILE: AzaharIOS/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: NO
+        CLANG_ENABLE_MODULES: YES
+        CLANG_ENABLE_OBJC_ARC: YES
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../externals/libretro-common/libretro-common/include"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+
+schemes:
+  AzaharIOS:
+    build:
+      targets:
+        AzaharIOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
