@@ -845,7 +845,7 @@ void RegisterCoreOptions(void) {
 static void ParseCpuOptions(void) {
     Settings::values.use_cpu_jit =
 #ifdef IOS
-        false;
+        LibRetro::CanUseJIT();
 #else
         LibRetro::FetchVariable(config::cpu::use_cpu_jit, config::enabled) == config::enabled;
 #endif

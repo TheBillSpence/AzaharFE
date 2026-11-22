@@ -59,7 +59,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.screen.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.screen];
 
-    self.status = MakeLabel(@"Starting Azahar...\nSoftware renderer • JIT disabled", 14);
+    self.status = MakeLabel(@"Starting Azahar...\nExperimental JIT test", 14);
     [self.view addSubview:self.status];
 
     UIStackView *controls = [[UIStackView alloc] init];
@@ -127,6 +127,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.started = YES;
     self.host = [AzaharEmulator new];
     self.host.delegate = self;
+    self.host.experimentalJITEnabled = [[NSUserDefaults standardUserDefaults]
+        boolForKey:@"AzaharExperimentalJIT"];
     NSError *error = nil;
     if (![self.host startGameAtURL:self.game error:&error]) {
         [self azaharEmulatorDidFail:error.localizedDescription ?: @"Unable to load Azahar."];
@@ -148,7 +150,15 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image {
     self.screen.image = image;
-    self.status.text = @"Software renderer • JIT disabled • Audio unavailable";
+    // FPS callback updates the status once per second.
+}
+
+- (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
+    BOOL requested = self.host.experimentalJITEnabled;
+    NSString *mode = jitActive ? @"JIT candidate" :
+                     (requested ? @"JIT unavailable (interpreter)" : @"Interpreter");
+    self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | Software graphics",
+                        fps, mode];
 }
 
 - (void)azaharEmulatorDidFail:(NSString *)message {
@@ -170,17 +180,22 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Azahar iOS";
+    self.title = @"Azahar JIT Test";
     self.tableView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1];
     self.navigationController.navigationBar.barStyle = UIBarStyleBlack;
     self.navigationController.navigationBar.tintColor = UIColor.systemTealColor;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
         target:self action:@selector(importGame)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"JIT OFF" style:UIBarButtonItemStylePlain
+        target:self action:@selector(toggleJIT)];
+    [self refreshJITButton];
 
     UILabel *footer = MakeLabel(
         @"Experimental frontend\nImport a decrypted, legally obtained 3DS game.\n"
-        @"JIT, sound, and touchscreen support are not finished.", 13);
+        @"JIT is OFF by default and may crash when enabled.\n"
+        @"Audio and touchscreen are not implemented.", 13);
     footer.frame = CGRectMake(0, 0, self.view.bounds.size.width, 155);
     self.tableView.tableFooterView = footer;
     [self refreshGames];
@@ -203,6 +218,34 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
             return [a.lastPathComponent localizedCaseInsensitiveCompare:b.lastPathComponent];
         }];
     [self.tableView reloadData];
+}
+
+- (void)refreshJITButton {
+    BOOL on = [[NSUserDefaults standardUserDefaults] boolForKey:@"AzaharExperimentalJIT"];
+    self.navigationItem.leftBarButtonItem.title = on ? @"JIT ON" : @"JIT OFF";
+}
+
+- (void)toggleJIT {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults boolForKey:@"AzaharExperimentalJIT"]) {
+        [defaults setBool:NO forKey:@"AzaharExperimentalJIT"];
+        [self refreshJITButton];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Experimental JIT test"
+        message:@"Enable JIT for this specific app externally before testing. "
+                @"The memory permission probe may pass while Dynarmic still crashes. "
+                @"JIT is OFF by default."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Enable JIT Test"
+        style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+            [defaults setBool:YES forKey:@"AzaharExperimentalJIT"];
+            [self refreshJITButton];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)importGame {

@@ -16,7 +16,7 @@ targets:
       - sdk: UniformTypeIdentifiers.framework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios
+        PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios.jitexperiment
         PRODUCT_NAME: AzaharIOS
         INFOPLIST_FILE: AzaharIOS/Info.plist
         GENERATE_INFOPLIST_FILE: NO

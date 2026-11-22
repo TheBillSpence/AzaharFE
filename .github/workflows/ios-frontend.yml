@@ -1,11 +1,12 @@
-name: Azahar iOS Experimental Frontend
+name: Azahar iOS JIT + FPS Experiment
 
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [ios-jit-experiment]
     paths:
       - 'ios-app/**'
+      - 'src/citra_libretro/core_settings.cpp'
       - '.github/workflows/ios-frontend.yml'
 
 permissions:
@@ -261,15 +262,15 @@ jobs:
           ditto "$app" release/Payload/AzaharIOS.app
           (
             cd release
-            zip -qry azahar-ios-prototype-unsigned.ipa Payload
-            unzip -tq azahar-ios-prototype-unsigned.ipa
+            zip -qry azahar-ios-jit-test-unsigned.ipa Payload
+            unzip -tq azahar-ios-jit-test-unsigned.ipa
           )
-          test -s release/azahar-ios-prototype-unsigned.ipa
+          test -s release/azahar-ios-jit-test-unsigned.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: azahar-ios-prototype-unsigned
-          path: release/azahar-ios-prototype-unsigned.ipa
+          name: azahar-ios-jit-test-unsigned
+          path: release/azahar-ios-jit-test-unsigned.ipa
           if-no-files-found: error
           retention-days: 14

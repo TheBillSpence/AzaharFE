@@ -8,7 +8,27 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <sys/mman.h>
+#include <unistd.h>
 #include "libretro.h"
+
+static bool AzaharProbeJITMapping() {
+    // This permission probe does NOT guarantee that Dynarmic will execute safely.
+    long size = sysconf(_SC_PAGESIZE);
+    if (size <= 0) return false;
+    void *p = MAP_FAILED;
+#ifdef MAP_JIT
+    p = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE | PROT_EXEC,
+             MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+#endif
+    if (p == MAP_FAILED) {
+        p = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANON, -1, 0);
+    }
+    if (p == MAP_FAILED) return false;
+    munmap(p, (size_t)size);
+    return true;
+}
 
 @class AzaharEmulator;
 
@@ -19,6 +39,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
     std::atomic<bool> _stopping;
     std::atomic<bool> _frameQueued;
     std::atomic<uint64_t> _buttons;
+    BOOL _jitEnabled;
     BOOL _running;
     NSString *_systemDirectory;
     NSString *_saveDirectory;
@@ -80,6 +101,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 @implementation AzaharEmulator
+
+- (BOOL)jitActive { return _jitEnabled; }
 
 - (instancetype)init {
     self = [super init];
@@ -152,6 +175,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _stopping.store(false);
     _frameQueued.store(false);
     _buttons.store(0);
+    _jitEnabled = self.experimentalJITEnabled && AzaharProbeJITMapping();
+    NSLog(@"Azahar JIT test: requested=%d mapping_allowed=%d",
+          self.experimentalJITEnabled, _jitEnabled);
     sCurrentEmulator = self;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -181,12 +207,26 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             });
         } else {
             auto nextFrame = std::chrono::steady_clock::now();
+            auto fpsWindow = nextFrame;
+            unsigned frameCount = 0;
             while (!_stopping.load()) {
                 @autoreleasepool {
                     _runFrame();
                 }
-                nextFrame += std::chrono::milliseconds(16);
+                ++frameCount;
                 auto now = std::chrono::steady_clock::now();
+                double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
+                if (elapsed >= 1.0) {
+                    double fps = frameCount / elapsed;
+                    BOOL usedJITCandidate = _jitEnabled;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self.delegate azaharEmulatorDidMeasureFPS:fps
+                                                        jitActive:usedJITCandidate];
+                    });
+                    fpsWindow = now;
+                    frameCount = 0;
+                }
+                nextFrame += std::chrono::milliseconds(16);
                 if (nextFrame < now) nextFrame = now;
                 std::this_thread::sleep_until(nextFrame);
             }
@@ -229,8 +269,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             return YES;
         case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
             if (!data) return NO;
-            // Don't claim JIT is enabled without runtime entitlement/memory tests.
-            *(bool *)data = false;
+            // This is a memory-permission candidate, not a guarantee of JIT execution.
+            *(bool *)data = _jitEnabled;
             return YES;
         case RETRO_ENVIRONMENT_SET_MESSAGE:
             if (data) {
