@@ -78,6 +78,7 @@ add_library(citra_common STATIC EXCLUDE_FROM_ALL
     serialization/atomic.h
     serialization/boost_discrete_interval.hpp
     serialization/boost_flat_set.h
+    serialization/boost_interval_set.hpp
     serialization/boost_small_vector.hpp
     serialization/boost_std_variant.hpp
     serialization/boost_vector.hpp
