@@ -57,6 +57,48 @@ jobs:
               )
           PY
 
+      - name: Patch LibreSSL explicit_bzero for iOS
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("externals/libressl/crypto/mem_clr.c")
+
+          if not path.exists():
+              raise SystemExit("ERROR: LibreSSL mem_clr.c was not found.")
+
+          text = path.read_text()
+
+          pattern = re.compile(
+              r"(?m)^([ \t]*)explicit_bzero\(ptr,\s*len\);[ \t]*$"
+          )
+
+          if "volatile unsigned char *vptr" in text:
+              print("LibreSSL explicit_bzero already patched.")
+          else:
+              replacement = (
+                  r"\1volatile unsigned char *vptr = "
+                  r"(volatile unsigned char *)ptr;" "\n"
+                  r"\1while (len != 0) {" "\n"
+                  r"\1    *vptr++ = 0;" "\n"
+                  r"\1    len--;" "\n"
+                  r"\1}"
+              )
+
+              text, count = pattern.subn(replacement, text, count=1)
+
+              if count != 1:
+                  raise SystemExit(
+                      "ERROR: Could not find the expected explicit_bzero call."
+                  )
+
+              path.write_text(text)
+              print("LibreSSL explicit_bzero patched successfully.")
+          PY
+
       - name: Show Apple build environment
         run: |
           set -euo pipefail
