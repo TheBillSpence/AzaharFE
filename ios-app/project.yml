@@ -12,6 +12,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: AzaharIOS
+    dependencies:
+      - sdk: UniformTypeIdentifiers.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios
