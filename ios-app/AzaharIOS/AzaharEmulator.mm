@@ -141,7 +141,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     NSLog(@"Azahar JIT27: %@", message);
     @synchronized (self) {
         if (!_jitDiagnostics) _jitDiagnostics = [NSMutableString new];
-        [_jitDiagnostics appendFormat:@"%.3f %@\\n",
+        [_jitDiagnostics appendFormat:@"%.3f %@\n",
             [[NSDate date] timeIntervalSince1970], message];
         NSString *documents = [_saveDirectory stringByDeletingLastPathComponent];
         NSString *path = [documents stringByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
