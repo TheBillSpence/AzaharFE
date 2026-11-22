@@ -70,6 +70,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
     std::atomic<uint64_t> _buttons;
     BOOL _jitEnabled;
     BOOL _running;
+    NSMutableString *_jitDiagnostics;
     NSString *_systemDirectory;
     NSString *_saveDirectory;
     NSString *_lastMessage;
@@ -91,6 +92,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
                height:(unsigned)height pitch:(size_t)pitch;
 - (int16_t)inputStateForDevice:(unsigned)device identifier:(unsigned)identifier;
 - (void)runGameAtURL:(NSURL *)url;
+- (void)reportJITStage:(NSString *)message;
 @end
 
 static bool AzaharEnvironment(unsigned command, void *data) {
@@ -132,6 +134,27 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 @implementation AzaharEmulator
 
 - (BOOL)jitActive { return _jitEnabled; }
+
+// Persist each stage before risky JIT debugger operations, because a stalled
+// breakpoint may stop every process thread before a UI message can repaint.
+- (void)reportJITStage:(NSString *)message {
+    NSLog(@"Azahar JIT27: %@", message);
+    @synchronized (self) {
+        if (!_jitDiagnostics) _jitDiagnostics = [NSMutableString new];
+        [_jitDiagnostics appendFormat:@"%.3f %@\\n",
+            [[NSDate date] timeIntervalSince1970], message];
+        NSString *documents = [_saveDirectory stringByDeletingLastPathComponent];
+        NSString *path = [documents stringByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
+        NSError *error = nil;
+        if (![_jitDiagnostics writeToFile:path atomically:YES
+                                encoding:NSUTF8StringEncoding error:&error]) {
+            NSLog(@"Azahar JIT27 diagnostic write failed: %@", error);
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.delegate azaharEmulatorDidChangeJITStatus:message];
+    });
+}
 
 - (instancetype)init {
     self = [super init];
@@ -204,6 +227,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _stopping.store(false);
     _frameQueued.store(false);
     _buttons.store(0);
+    _jitDiagnostics = [NSMutableString new];
     // JIT readiness is evaluated on the worker, after StikDebug attaches.
     _jitEnabled = NO;
     sCurrentEmulator = self;
@@ -217,29 +241,30 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)runGameAtURL:(NSURL *)url {
     @autoreleasepool {
         if (self.experimentalJITEnabled) {
-            NSString *status = @"iOS 27: waiting for StikDebug universal.js...";
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self.delegate azaharEmulatorDidChangeJITStatus:status];
-            });
+            [self reportJITStage:@"1/7 Waiting for StikDebug debugger permission"];
 
-            // StikDebug/LiveContainer may attach after the app starts.
-            // Wait on our worker, never block UIKit or trigger JIT too early.
+            // Wait only on the worker so the UI can still report progress.
             for (unsigned n = 0; n < 150 && !_stopping.load(); ++n) {
                 if (AzaharDebuggerIsEnabled()) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
 
             const bool debugged = AzaharDebuggerIsEnabled();
+            if (debugged) {
+                [self reportJITStage:@"2/7 Debugger found; requesting 16 KB JIT memory"];
+            } else {
+                [self reportJITStage:@"Debugger NOT found; using interpreter"];
+            }
+            // The breakpoint must be handled by universal.js. If it stalls,
+            // the last durable log entry will identify this exact operation.
             _jitEnabled = debugged && AzaharProbeJITMapping();
-            NSLog(@"Azahar iOS27 JIT: debugger=%d universal_mapping=%d",
-                  debugged, _jitEnabled);
-            NSString *result = _jitEnabled
-                ? @"iOS 27 universal JIT mapping prepared (experimental)"
-                : (!debugged ? @"JIT debugger not detected; using interpreter"
-                             : @"universal.js memory setup failed; using interpreter");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self.delegate azaharEmulatorDidChangeJITStatus:result];
-            });
+            if (_jitEnabled) {
+                [self reportJITStage:@"3/7 JIT mapping prepared; initializing core"];
+            } else if (debugged) {
+                [self reportJITStage:@"Universal JIT memory failed; using interpreter"];
+            }
+        } else {
+            [self reportJITStage:@"JIT OFF; initializing interpreter"];
         }
 
         _setEnvironment(AzaharEnvironment);
@@ -248,12 +273,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _setAudioBatch(AzaharAudioBatch);
         _setInputPoll(AzaharInputPoll);
         _setInputState(AzaharInputState);
+        [self reportJITStage:@"4/7 Calling retro_init"];
         _initCore();
+        [self reportJITStage:@"5/7 Core initialized; loading game"];
 
         struct retro_game_info game = {};
         game.path = url.fileSystemRepresentation;
 
         BOOL loaded = _loadGame(&game);
+        [self reportJITStage:loaded ? @"6/7 Game loaded; starting first frame"
+                                    : @"Game load failed"];
         if (!loaded) {
             NSString *message = _lastMessage ?: @"Azahar couldn't load this game. Check the ROM format and whether it is decrypted.";
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -268,6 +297,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     _runFrame();
                 }
                 ++frameCount;
+                if (frameCount == 1) {
+                    [self reportJITStage:@"7/7 First frame returned; measuring FPS"];
+                }
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
                 if (elapsed >= 1.0) {

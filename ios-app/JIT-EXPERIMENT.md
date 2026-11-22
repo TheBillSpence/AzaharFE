@@ -11,7 +11,8 @@ This experimental build requests executable code-cache memory through
 StikDebug universal.js: BRK #0xf00d, x16=1, x0=null, x1=region size.
 It creates RW aliases through vm_remap and vm_protect and makes Dynarmic
 write emitted ARM64 code to the RW alias while executing the RX one.
-Each iOS Dynarmic cache is limited to 32 MiB, rather than 128 MiB.
+Each iOS Dynarmic code cache is now capped at 4 MiB to reduce how many
+16 KiB pages the debugger needs to prepare at once.
 The frontend first preflights the same protocol with a 16 KiB region.
 
 Important: universal.js MUST be assigned before turning JIT ON. If
@@ -26,3 +27,13 @@ launch through LiveContainer. Then enable JIT ON inside Azahar.
 
 The software renderer is still slow and audio/touchscreen are not yet
 implemented. Stable master remains a fallback.
+
+## Black-screen debugging (next test)
+
+If JIT ON stalls, find `Documents/AzaharJITDiagnostics.txt` in the
+experimental app's LiveContainer Files view. The file is written before each
+potentially blocking stage. The last line tells us whether the app is waiting
+for StikDebug, requesting the 16 KiB preflight mapping, initializing Azahar,
+loading the game, or waiting for the first frame to return. Share that line.
+The visible status label also shows the stage if UIKit is still running.
+The JIT ON mode remains experimental and may freeze or crash; JIT OFF is safe.

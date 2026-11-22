@@ -360,8 +360,9 @@ void ARM_Dynarmic::ServeBreak([[maybe_unused]] int signal) {
 std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     Dynarmic::A32::UserConfig config;
 #ifdef IOS
-    // Keep debugger-prepared code caches smaller on 4 GB iPhones.
-    config.code_cache_size = 32 * 1024 * 1024;
+    // Limit per-cache debugger preparation on iOS 27: 4 MiB = 256 pages.
+    // Dynarmic automatically clears/recycles its cache when nearly full.
+    config.code_cache_size = 4 * 1024 * 1024;
 #endif
     config.callbacks = cb.get();
     if (current_page_table) {
