@@ -273,6 +273,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 @end
 
-UIViewController *AzaharCreateLibraryController(void) {
+extern "C" UIViewController *AzaharCreateLibraryController(void) {
     return [[AzaharLibraryViewController alloc] initWithStyle:UITableViewStylePlain];
 }
