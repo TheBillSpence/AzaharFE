@@ -279,14 +279,44 @@ void retro_run() {
     }
 #endif
 
+    // Instrument only the first JIT frame. A black screen can mean either
+    // a JIT execution stall or many RunLoop slices without a video frame.
+#ifdef IOS
+    const bool trace_jit_first_frame =
+        emu_instance->first_run_loop && LibRetro::CanUseJIT();
+    if (trace_jit_first_frame) {
+        LibRetro::DisplayMessage("JIT27TRACE entered retro_run");
+    }
+#endif
+
     // Run only-once operations
     if (emu_instance->first_run_loop) {
         emu_instance->first_run_loop = false;
         Core::System::GetInstance().RegisterCoreLoopThreadId();
     }
 
+#ifdef IOS
+    unsigned first_frame_slices = 0;
+#endif
     while (!emu_instance->emu_window->HasSubmittedFrame()) {
+#ifdef IOS
+        if (trace_jit_first_frame && first_frame_slices == 0) {
+            LibRetro::DisplayMessage("JIT27TRACE entering first System::RunLoop");
+        }
+#endif
         auto result = Core::System::GetInstance().RunLoop();
+#ifdef IOS
+        if (trace_jit_first_frame) {
+            ++first_frame_slices;
+            if (first_frame_slices == 1) {
+                LibRetro::DisplayMessage("JIT27TRACE first System::RunLoop returned");
+            } else if (first_frame_slices == 100) {
+                LibRetro::DisplayMessage("JIT27TRACE 100 RunLoop slices; no video frame");
+            } else if (first_frame_slices == 10000) {
+                LibRetro::DisplayMessage("JIT27TRACE 10000 RunLoop slices; no video frame");
+            }
+        }
+#endif
 
         if (result != Core::System::ResultStatus::Success) {
             std::string errorContent = Core::System::GetInstance().GetStatusDetails();
@@ -314,6 +344,11 @@ void retro_run() {
             LibRetro::DisplayMessage(msg.c_str());
         }
     }
+#ifdef IOS
+    if (trace_jit_first_frame) {
+        LibRetro::DisplayMessage("JIT27TRACE video frame submitted");
+    }
+#endif
 }
 
 static void setup_memory_maps() {

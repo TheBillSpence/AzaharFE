@@ -37,3 +37,19 @@ for StikDebug, requesting the 16 KiB preflight mapping, initializing Azahar,
 loading the game, or waiting for the first frame to return. Share that line.
 The visible status label also shows the stage if UIKit is still running.
 The JIT ON mode remains experimental and may freeze or crash; JIT OFF is safe.
+
+## First-frame diagnostic trace (build after #12)
+
+The earlier iOS 27 test passed the debugger, 16 KiB universal.js JIT
+memory check, core init and game loading, but hung before returning from
+the first frame. This test traces the *first libretro frame* through:
+
+- `retro_run` entry
+- `System::RunLoop` entry and exit, including bounded checks for many slices
+- Dynarmic's `MakeJit`, `Run`, and `Step` first entry/exit
+- first video frame submission
+
+Events beginning `JIT27TRACE` are stored in the same Documents diagnostic
+file as the seven frontend startup stages. If it hangs again, export the
+last 10 lines of `AzaharJITDiagnostics.txt` for diagnosis. No automatic
+switch to interpreter occurs while Dynarmic may already be executing.

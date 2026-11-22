@@ -361,8 +361,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         case RETRO_ENVIRONMENT_SET_MESSAGE:
             if (data) {
                 const retro_message *message = (const retro_message *)data;
-                if (message->msg)
+                if (message->msg) {
                     _lastMessage = [NSString stringWithUTF8String:message->msg];
+                    // The linked libretro core sends bounded startup breadcrumbs.
+                    // Persist them in Documents before JIT can stall again.
+                    if ([_lastMessage hasPrefix:@"JIT27TRACE "]) {
+                        [self reportJITStage:_lastMessage];
+                    }
+                }
             }
             return YES;
         case RETRO_ENVIRONMENT_SET_VARIABLES:

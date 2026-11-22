@@ -4,6 +4,10 @@
 
 #include <csignal>
 #include <cstring>
+#ifdef IOS
+#include <atomic>
+#include "citra_libretro/environment.h"
+#endif
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/optimization_flags.h>
 #include "common/assert.h"
@@ -196,7 +200,19 @@ void ARM_Dynarmic::Run() {
         return;
     }
 
+#ifdef IOS
+    static std::atomic<bool> log_first_run{true};
+    const bool trace_first_run = log_first_run.exchange(false);
+    if (trace_first_run) {
+        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Run entered");
+    }
+#endif
     jit->Run();
+#ifdef IOS
+    if (trace_first_run) {
+        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Run returned");
+    }
+#endif
 }
 
 void ARM_Dynarmic::Step() {
@@ -204,7 +220,19 @@ void ARM_Dynarmic::Step() {
         return;
     }
 
+#ifdef IOS
+    static std::atomic<bool> log_first_step{true};
+    const bool trace_first_step = log_first_step.exchange(false);
+    if (trace_first_step) {
+        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Step entered");
+    }
+#endif
     jit->Step();
+#ifdef IOS
+    if (trace_first_step) {
+        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Step returned");
+    }
+#endif
 }
 
 void ARM_Dynarmic::SetPC(u32 pc) {
@@ -375,7 +403,14 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.processor_id = GetID();
     config.global_monitor = &exclusive_monitor.monitor;
 
-    return std::make_unique<Dynarmic::A32::Jit>(config);
+#ifdef IOS
+    LibRetro::DisplayMessage("JIT27TRACE Dynarmic::MakeJit allocating code cache");
+#endif
+    auto created_jit = std::make_unique<Dynarmic::A32::Jit>(config);
+#ifdef IOS
+    LibRetro::DisplayMessage("JIT27TRACE Dynarmic::MakeJit returned");
+#endif
+    return created_jit;
 }
 
 } // namespace Core
