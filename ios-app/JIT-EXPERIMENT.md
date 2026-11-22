@@ -1,38 +1,28 @@
-# Experimental iOS JIT + FPS (iPhone 11 Pro Max / A13)
+# Azahar experimental JIT for iOS 27
 
-The stable app on master remains unchanged. This branch uses a different
-bundle ID and has a separate Documents directory.
+This branch targets iOS 27 on the iPhone 11 Pro Max / A13. The stable
+master branch is unchanged.
 
-## What changed
+StikDebug's TXM detection treats essentially all iOS 27 iPhones as TXM
+enabled, including the iPhone 11. A debugger attachment by itself isn't
+enough to grant executable memory.
 
-The previous JIT experiment checked RWX mmap permission before launching the
-game. That did not match how Dynarmic actually emits ARM64 instructions.
+This experimental build requests executable code-cache memory through
+StikDebug universal.js: BRK #0xf00d, x16=1, x0=null, x1=region size.
+It creates RW aliases through vm_remap and vm_protect and makes Dynarmic
+write emitted ARM64 code to the RW alias while executing the RX one.
+Each iOS Dynarmic cache is limited to 32 MiB, rather than 128 MiB.
+The frontend first preflights the same protocol with a 16 KiB region.
 
-This build patches the pinned Oaknut submodule at build time and gives its
-code cache separate writable (RW) and executable (RX) mappings. Dynarmic's
-Oaknut code generators and relocations now write through the RW alias,
-while executing through RX. It also waits up to 15 seconds for the host
-process's CS_DEBUGGED flag before attempting JIT initialization.
+Important: universal.js MUST be assigned before turning JIT ON. If
+CS_DEBUGGED is set but the debugger isn't running the universal script,
+the BRK may crash. This is experimental, untested on a physical device.
+The JIT status reports successful memory preparation only, not validated
+JIT game execution.
 
-This is targeted at *pre-TXM* hardware, including iPhone 11 Pro Max (A13).
-On iOS 26+ hardware that requires the universal.js JIT breakpoint
-protocol (generally A15/M2+), it intentionally falls back to the interpreter
-rather than trying to execute unprepared memory or issuing a dangerous BRK.
-Implementing the newer StikDebug region preparation handshake is a separate
-next step.
+LiveContainer: set StikDebug as the JIT enabler, enable Launch with JIT
+for the Azahar guest, assign universal.js, connect LocalDevVPN, and
+launch through LiveContainer. Then enable JIT ON inside Azahar.
 
-## Testing in LiveContainer
-
-1. In LiveContainer, set up StikDebug as the JIT enabler.
-2. Enable "Launch with JIT" for Azahar JIT Test.
-3. In Azahar's game library enable JIT ON, then launch a game via LiveContainer.
-4. It waits for CS_DEBUGGED, then tests the actual dual-mapped memory path.
-5. FPS display shows "JIT dual-map test" when permitted; this still does
-   not prove that generated Dynarmic code ran correctly. Compare FPS,
-   gameplay, and log output; disable JIT if it crashes.
-
-JIT is OFF by default. There is no automatic StikDebug URL opener because
-LiveContainer already coordinates JIT for its guest apps.
-The FPS value counts libretro frame calls, not GPU utilization. Graphics are
-software-rendered; audio and touchscreen input remain unimplemented.
-The workflow produces an unsigned IPA needing normal sideload signing.
+The software renderer is still slow and audio/touchscreen are not yet
+implemented. Stable master remains a fallback.

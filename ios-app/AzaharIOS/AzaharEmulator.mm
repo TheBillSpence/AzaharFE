@@ -11,7 +11,6 @@
 #include <mach/mach.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
-#include <sys/sysctl.h>
 #include <unistd.h>
 #include "libretro.h"
 
@@ -25,50 +24,39 @@ static bool AzaharDebuggerIsEnabled() {
            (flags & kCSDebugged) != 0;
 }
 
-// A15/M2+ on iOS 26+ requires the separate universal.js breakpoint protocol.
-// This test build intentionally falls back to interpreter rather than crashing
-// those devices by trying the pre-TXM code-cache path.
-static bool AzaharRequiresUniversalJIT() {
-    if (@available(iOS 26.0, *)) {
-        char model[128] = {};
-        size_t length = sizeof(model);
-        if (sysctlbyname("hw.machine", model, &length, nullptr, 0) != 0)
-            return true;
-        int generation = 0;
-        if (sscanf(model, "iPhone%d,", &generation) == 1)
-            return generation >= 14;
-        if (sscanf(model, "iPad%d,", &generation) == 1)
-            return generation >= 14;
-        return true;
+// On iOS 27, TXM requires universal.js even on iPhone 11 / A13.
+__attribute__((noinline, optnone, naked))
+static void *AzaharUniversalJITRegion(void *, size_t) {
+    __asm__ volatile("mov x16, #1\\n"
+                     "brk #0xf00d\\n"
+                     "ret\\n");
+}
+static bool AzaharProbeJITMapping() {
+    // A BRK without the universal script attached may crash. Test JIT ON only.
+    if (!AzaharDebuggerIsEnabled()) return false;
+    if (@available(iOS 27.0, *)) {
+        constexpr size_t size = 16384;
+        void *rx = AzaharUniversalJITRegion(nullptr, size);
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(rx);
+        if (!rx || rx == MAP_FAILED || (addr & 0x3fff) ||
+            addr == 0x690000e0ULL || addr == 0xcccccccc690000e0ULL)
+            return false;
+        vm_address_t rw = 0;
+        vm_prot_t cur = 0, max = 0;
+        kern_return_t result = vm_remap(mach_task_self(), &rw, (vm_size_t)size, 0,
+                                        VM_FLAGS_ANYWHERE, mach_task_self(),
+                                        reinterpret_cast<vm_address_t>(rx),
+                                        FALSE, &cur, &max, VM_INHERIT_NONE);
+        bool ok = result == KERN_SUCCESS;
+        if (ok) {
+            ok = vm_protect(mach_task_self(), rw, (vm_size_t)size, FALSE,
+                            VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
+            vm_deallocate(mach_task_self(), rw, (vm_size_t)size);
+        }
+        munmap(rx, size);
+        return ok;
     }
     return false;
-}
-
-// Match the actual Dynarmic/Oaknut dual-memory allocator: one RW view and
-// one RX view of the same physical pages, without RWX mappings.
-static bool AzaharProbeJITMapping() {
-    const long size = sysconf(_SC_PAGESIZE);
-    if (size <= 0) return false;
-
-    void *writable = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (writable == MAP_FAILED) return false;
-
-    vm_address_t executable = 0;
-    vm_prot_t currentProtection = 0, maximumProtection = 0;
-    kern_return_t mapped = vm_remap(mach_task_self(), &executable, (vm_size_t)size,
-                                    0, VM_FLAGS_ANYWHERE, mach_task_self(),
-                                    reinterpret_cast<vm_address_t>(writable),
-                                    false, &currentProtection,
-                                    &maximumProtection, VM_INHERIT_NONE);
-    bool ok = mapped == KERN_SUCCESS;
-    if (ok) {
-        ok = mprotect(reinterpret_cast<void *>(executable), (size_t)size,
-                      PROT_READ | PROT_EXEC) == 0;
-        munmap(reinterpret_cast<void *>(executable), (size_t)size);
-    }
-    munmap(writable, (size_t)size);
-    return ok;
 }
 
 @class AzaharEmulator;
@@ -229,7 +217,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)runGameAtURL:(NSURL *)url {
     @autoreleasepool {
         if (self.experimentalJITEnabled) {
-            NSString *status = @"Waiting for debugger to enable JIT...";
+            NSString *status = @"iOS 27: waiting for StikDebug universal.js...";
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self.delegate azaharEmulatorDidChangeJITStatus:status];
             });
@@ -242,16 +230,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             }
 
             const bool debugged = AzaharDebuggerIsEnabled();
-            const bool needsUniversal = AzaharRequiresUniversalJIT();
-            _jitEnabled = debugged && !needsUniversal && AzaharProbeJITMapping();
-            NSLog(@"Azahar JIT: debugger=%d universal_required=%d dual_mapping=%d",
-                  debugged, needsUniversal, _jitEnabled);
+            _jitEnabled = debugged && AzaharProbeJITMapping();
+            NSLog(@"Azahar iOS27 JIT: debugger=%d universal_mapping=%d",
+                  debugged, _jitEnabled);
             NSString *result = _jitEnabled
-                ? @"Debugger attached; dual-mapped JIT memory ready (experimental)"
+                ? @"iOS 27 universal JIT mapping prepared (experimental)"
                 : (!debugged ? @"JIT debugger not detected; using interpreter"
-                             : (needsUniversal
-                               ? @"Device requires universal.js allocator; using interpreter"
-                               : @"JIT dual mapping unavailable; using interpreter"));
+                             : @"universal.js memory setup failed; using interpreter");
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self.delegate azaharEmulatorDidChangeJITStatus:result];
             });

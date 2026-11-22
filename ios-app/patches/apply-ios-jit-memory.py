@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch the pinned Oaknut/Dynarmic submodules in Actions for pre-TXM iOS JIT.
+"""Patch the pinned Oaknut/Dynarmic submodules in Actions for iOS 27 universal.js JIT.
 
 The upstream submodules are immutable gitlinks in this repository. Apply
 strict, version-specific source edits in the CI workspace and fail on drift.
@@ -23,33 +23,46 @@ source = replace(source, "#    include <TargetConditionals.h>\n",
                  "#    include <TargetConditionals.h>\n", "Mach headers")
 source = replace(
     source,
-    "        m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);",
-    """        // iOS needs a W^X code cache: generate code through RW pages,
-        // execute it through a separate RX mapping of the same pages.
-        m_writable_memory = (std::uint32_t*)mmap(
-            nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-        if (m_writable_memory == MAP_FAILED)
-            throw std::bad_alloc{};
+    "namespace oaknut {\\n\\nclass CodeBlock {",
+    """namespace oaknut {
 
-        vm_address_t executable = 0;
+#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(__aarch64__)
+// x16=1 requests the universal.js executable-memory preparation RPC.
+__attribute__((noinline, optnone, naked))
+static void* AzaharRequestUniversalJITRegion(void*, std::size_t) {
+    __asm__ volatile("mov x16, #1\\n"
+                     "brk #0xf00d\\n"
+                     "ret\\n");
+}
+#endif
+
+class CodeBlock {""",
+    "universal JIT RPC",
+)
+source = replace(
+    source,
+    "        m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);",
+    """        // StikDebug universal.js must grant TXM-executable pages on iOS 27.
+        // The NULL address triggers debugserver allocation and page preparation.
+        m_memory = (std::uint32_t*)AzaharRequestUniversalJITRegion(nullptr, size);
+        const auto address = reinterpret_cast<std::uintptr_t>(m_memory);
+        if (!m_memory || m_memory == MAP_FAILED || (address & 0x3fff) ||
+            address == 0x690000e0ULL || address == 0xcccccccc690000e0ULL)
+            throw std::bad_alloc{};
+        vm_address_t writable = 0;
         vm_prot_t current = 0, maximum = 0;
-        const kern_return_t result = vm_remap(
-            mach_task_self(), &executable, size, 0, VM_FLAGS_ANYWHERE,
-            mach_task_self(), (vm_address_t)m_writable_memory, false,
-            &current, &maximum, VM_INHERIT_NONE);
-        if (result != KERN_SUCCESS) {
-            munmap(m_writable_memory, size);
-            m_writable_memory = nullptr;
+        auto result = vm_remap(mach_task_self(), &writable, (vm_size_t)size, 0,
+                               VM_FLAGS_ANYWHERE, mach_task_self(),
+                               reinterpret_cast<vm_address_t>(m_memory),
+                               FALSE, &current, &maximum, VM_INHERIT_NONE);
+        if (result != KERN_SUCCESS)
+            throw std::bad_alloc{};
+        if (vm_protect(mach_task_self(), writable, (vm_size_t)size, FALSE,
+                       VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS) {
+            vm_deallocate(mach_task_self(), writable, (vm_size_t)size);
             throw std::bad_alloc{};
         }
-        m_memory = (std::uint32_t*)executable;
-        if (mprotect(m_memory, size, PROT_READ | PROT_EXEC) != 0) {
-            munmap(m_memory, size);
-            munmap(m_writable_memory, size);
-            m_memory = nullptr;
-            m_writable_memory = nullptr;
-            throw std::bad_alloc{};
-        }""",
+        m_writable_memory = reinterpret_cast<std::uint32_t*>(writable);""",
     "iOS RW/RX dual mapping",
 )
 source = replace(
