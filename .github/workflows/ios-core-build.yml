@@ -3,6 +3,11 @@ name: iOS ARM64 Core Build and Validation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/ios-core-build.yml'
 
 permissions:
   contents: read
@@ -76,10 +81,14 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          root = Path("externals/libressl/crypto")
+          roots = [
+              Path("externals/libressl/crypto"),
+              Path("externals/libressl/ssl"),
+          ]
 
-          if not root.exists():
-              raise SystemExit("ERROR: LibreSSL crypto folder was not found.")
+          for root in roots:
+              if not root.is_dir():
+                  raise SystemExit(f"ERROR: LibreSSL folder was not found: {root}")
 
           def find_call_end(source, opening):
               depth = 1
@@ -119,7 +128,12 @@ jobs:
 
           patched = 0
 
-          for path in list(root.rglob("*.c")) + list(root.rglob("*.h")):
+          paths = []
+          for root in roots:
+              paths.extend(root.rglob("*.c"))
+              paths.extend(root.rglob("*.h"))
+
+          for path in paths:
               source = path.read_text()
               output = []
               position = 0
