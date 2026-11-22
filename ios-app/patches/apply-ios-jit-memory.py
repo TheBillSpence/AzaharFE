@@ -23,7 +23,7 @@ source = replace(source, "#    include <TargetConditionals.h>\n",
                  "#    include <TargetConditionals.h>\n", "Mach headers")
 source = replace(
     source,
-    "namespace oaknut {\\n\\nclass CodeBlock {",
+    "namespace oaknut {\n\nclass CodeBlock {",
     """namespace oaknut {
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE && defined(__aarch64__)

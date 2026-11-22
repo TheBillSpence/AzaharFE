@@ -159,7 +159,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
     BOOL requested = self.host.experimentalJITEnabled;
-    NSString *mode = jitActive ? @"JIT dual-map test" :
+    NSString *mode = jitActive ? @"JIT27 universal prepared" :
                      (requested ? @"JIT unavailable (interpreter)" : @"Interpreter");
     self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | Software graphics",
                         fps, mode];
@@ -198,7 +198,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
     UILabel *footer = MakeLabel(
         @"Experimental frontend\nImport a decrypted, legally obtained 3DS game.\n"
-        @"JIT is OFF by default and may crash when enabled.\n"
+        @"JIT ON requires StikDebug universal.js (otherwise it may crash).\n"
         @"Audio and touchscreen are not implemented.", 13);
     footer.frame = CGRectMake(0, 0, self.view.bounds.size.width, 155);
     self.tableView.tableFooterView = footer;
@@ -239,7 +239,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Experimental JIT test"
         message:@"Enable JIT through StikDebug or LiveContainer, then launch the game. "
-                @"Azahar will wait for the debugger and prepare separate writable "
+                @"For iOS 27, select universal.js in StikDebug FIRST. Azahar prepares writable "
                 @"and executable memory mappings. JIT is experimental and OFF by default."
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"

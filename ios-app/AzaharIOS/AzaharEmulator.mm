@@ -27,9 +27,9 @@ static bool AzaharDebuggerIsEnabled() {
 // On iOS 27, TXM requires universal.js even on iPhone 11 / A13.
 __attribute__((noinline, optnone, naked))
 static void *AzaharUniversalJITRegion(void *, size_t) {
-    __asm__ volatile("mov x16, #1\\n"
-                     "brk #0xf00d\\n"
-                     "ret\\n");
+    __asm__ volatile("mov x16, #1\n"
+                     "brk #0xf00d\n"
+                     "ret\n");
 }
 static bool AzaharProbeJITMapping() {
     // A BRK without the universal script attached may crash. Test JIT ON only.
