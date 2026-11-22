@@ -8,26 +8,67 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <mach/mach.h>
+#include <mach/vm_map.h>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
 #include <unistd.h>
 #include "libretro.h"
 
-static bool AzaharProbeJITMapping() {
-    // This permission probe does NOT guarantee that Dynarmic will execute safely.
-    long size = sysconf(_SC_PAGESIZE);
-    if (size <= 0) return false;
-    void *p = MAP_FAILED;
-#ifdef MAP_JIT
-    p = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE | PROT_EXEC,
-             MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-#endif
-    if (p == MAP_FAILED) {
-        p = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                 MAP_PRIVATE | MAP_ANON, -1, 0);
+// Apple's CS_DEBUGGED flag indicates that a debugger has granted JIT access.
+static bool AzaharDebuggerIsEnabled() {
+    using CSOps = int (*)(pid_t, unsigned int, void *, size_t);
+    auto csopsFn = reinterpret_cast<CSOps>(dlsym(RTLD_DEFAULT, "csops"));
+    uint32_t flags = 0;
+    constexpr uint32_t kCSDebugged = 0x10000000;
+    return csopsFn && csopsFn(getpid(), 0, &flags, sizeof(flags)) == 0 &&
+           (flags & kCSDebugged) != 0;
+}
+
+// A15/M2+ on iOS 26+ requires the separate universal.js breakpoint protocol.
+// This test build intentionally falls back to interpreter rather than crashing
+// those devices by trying the pre-TXM code-cache path.
+static bool AzaharRequiresUniversalJIT() {
+    if (@available(iOS 26.0, *)) {
+        char model[128] = {};
+        size_t length = sizeof(model);
+        if (sysctlbyname("hw.machine", model, &length, nullptr, 0) != 0)
+            return true;
+        int generation = 0;
+        if (sscanf(model, "iPhone%d,", &generation) == 1)
+            return generation >= 14;
+        if (sscanf(model, "iPad%d,", &generation) == 1)
+            return generation >= 14;
+        return true;
     }
-    if (p == MAP_FAILED) return false;
-    munmap(p, (size_t)size);
-    return true;
+    return false;
+}
+
+// Match the actual Dynarmic/Oaknut dual-memory allocator: one RW view and
+// one RX view of the same physical pages, without RWX mappings.
+static bool AzaharProbeJITMapping() {
+    const long size = sysconf(_SC_PAGESIZE);
+    if (size <= 0) return false;
+
+    void *writable = mmap(nullptr, (size_t)size, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (writable == MAP_FAILED) return false;
+
+    vm_address_t executable = 0;
+    vm_prot_t currentProtection = 0, maximumProtection = 0;
+    kern_return_t mapped = vm_remap(mach_task_self(), &executable, (vm_size_t)size,
+                                    0, VM_FLAGS_ANYWHERE, mach_task_self(),
+                                    reinterpret_cast<vm_address_t>(writable),
+                                    false, &currentProtection,
+                                    &maximumProtection, VM_INHERIT_NONE);
+    bool ok = mapped == KERN_SUCCESS;
+    if (ok) {
+        ok = mprotect(reinterpret_cast<void *>(executable), (size_t)size,
+                      PROT_READ | PROT_EXEC) == 0;
+        munmap(reinterpret_cast<void *>(executable), (size_t)size);
+    }
+    munmap(writable, (size_t)size);
+    return ok;
 }
 
 @class AzaharEmulator;
@@ -175,9 +216,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _stopping.store(false);
     _frameQueued.store(false);
     _buttons.store(0);
-    _jitEnabled = self.experimentalJITEnabled && AzaharProbeJITMapping();
-    NSLog(@"Azahar JIT test: requested=%d mapping_allowed=%d",
-          self.experimentalJITEnabled, _jitEnabled);
+    // JIT readiness is evaluated on the worker, after StikDebug attaches.
+    _jitEnabled = NO;
     sCurrentEmulator = self;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -188,6 +228,35 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)runGameAtURL:(NSURL *)url {
     @autoreleasepool {
+        if (self.experimentalJITEnabled) {
+            NSString *status = @"Waiting for debugger to enable JIT...";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.delegate azaharEmulatorDidChangeJITStatus:status];
+            });
+
+            // StikDebug/LiveContainer may attach after the app starts.
+            // Wait on our worker, never block UIKit or trigger JIT too early.
+            for (unsigned n = 0; n < 150 && !_stopping.load(); ++n) {
+                if (AzaharDebuggerIsEnabled()) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
+            const bool debugged = AzaharDebuggerIsEnabled();
+            const bool needsUniversal = AzaharRequiresUniversalJIT();
+            _jitEnabled = debugged && !needsUniversal && AzaharProbeJITMapping();
+            NSLog(@"Azahar JIT: debugger=%d universal_required=%d dual_mapping=%d",
+                  debugged, needsUniversal, _jitEnabled);
+            NSString *result = _jitEnabled
+                ? @"Debugger attached; dual-mapped JIT memory ready (experimental)"
+                : (!debugged ? @"JIT debugger not detected; using interpreter"
+                             : (needsUniversal
+                               ? @"Device requires universal.js allocator; using interpreter"
+                               : @"JIT dual mapping unavailable; using interpreter"));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.delegate azaharEmulatorDidChangeJITStatus:result];
+            });
+        }
+
         _setEnvironment(AzaharEnvironment);
         _setVideoRefresh(AzaharVideo);
         _setAudioSample(AzaharAudioSample);
@@ -269,7 +338,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             return YES;
         case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
             if (!data) return NO;
-            // This is a memory-permission candidate, not a guarantee of JIT execution.
+            // Only report JIT after external debugger + dual mapping preflight.
             *(bool *)data = _jitEnabled;
             return YES;
         case RETRO_ENVIRONMENT_SET_MESSAGE:

@@ -153,9 +153,13 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     // FPS callback updates the status once per second.
 }
 
+- (void)azaharEmulatorDidChangeJITStatus:(NSString *)status {
+    self.status.text = status;
+}
+
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
     BOOL requested = self.host.experimentalJITEnabled;
-    NSString *mode = jitActive ? @"JIT candidate" :
+    NSString *mode = jitActive ? @"JIT dual-map test" :
                      (requested ? @"JIT unavailable (interpreter)" : @"Interpreter");
     self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | Software graphics",
                         fps, mode];
@@ -234,9 +238,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     }
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Experimental JIT test"
-        message:@"Enable JIT for this specific app externally before testing. "
-                @"The memory permission probe may pass while Dynarmic still crashes. "
-                @"JIT is OFF by default."
+        message:@"Enable JIT through StikDebug or LiveContainer, then launch the game. "
+                @"Azahar will wait for the debugger and prepare separate writable "
+                @"and executable memory mappings. JIT is experimental and OFF by default."
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
         style:UIAlertActionStyleCancel handler:nil]];

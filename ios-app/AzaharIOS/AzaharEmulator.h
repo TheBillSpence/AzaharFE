@@ -3,6 +3,7 @@
 @protocol AzaharEmulatorDelegate <NSObject>
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image;
 - (void)azaharEmulatorDidFail:(NSString *)message;
+- (void)azaharEmulatorDidChangeJITStatus:(NSString *)status;
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive;
 @end
 

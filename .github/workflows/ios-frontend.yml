@@ -206,6 +206,11 @@ jobs:
           print(f"Total explicit_bzero calls patched: {patched}")
           PY
 
+      - name: Patch Dynarmic and Oaknut for iOS dual-mapped JIT
+        run: |
+          set -euo pipefail
+          python3 ios-app/patches/apply-ios-jit-memory.py
+
       - name: Configure libretro software core for iOS ARM64
         run: |
           set -euo pipefail
