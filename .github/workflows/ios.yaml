@@ -65,6 +65,47 @@ jobs:
           print(f"Patched {replacements} additional explicit_bzero call(s)")
           PY
 
+      - name: Remove macOS-only Qt sources for iOS
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cmake_file = Path("src/citra_qt/CMakeLists.txt")
+          text = cmake_file.read_text()
+
+          text = text.replace(
+              "if (APPLE)\n  target_sources(citra_qt PUBLIC\n",
+              "if (APPLE AND NOT IOS)\n  target_sources(citra_qt PUBLIC\n",
+          )
+
+          cmake_file.write_text(text)
+          PY
+
+      - name: Guard macOS Metal implementation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/citra_qt/bootmanager.cpp")
+          text = path.read_text()
+
+          text = text.replace(
+              "#if defined(__APPLE__)",
+              "#if defined(__APPLE__) && !defined(IOS)",
+              1,
+          )
+
+          text = text.replace(
+              "#elif defined(__APPLE__)",
+              "#elif defined(__APPLE__) && !defined(IOS)",
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
       - name: Install tools
         run: brew install ninja ccache
 
@@ -87,7 +128,7 @@ jobs:
           -DENABLE_CUBEB=OFF
           -DENABLE_FFMPEG=OFF
           -DENABLE_DISCORD_RPC=OFF
-          -DCITRA_USE_PRECOMPILED_HEADERS=OFF
+          -DCITRA_USE_PRECOMPDILED_HEADERS=OFF
 
       - name: Build iOS target
         run: cmake --build build-ios --parallel 3 --target citra_meta
