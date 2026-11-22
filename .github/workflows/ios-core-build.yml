@@ -18,6 +18,18 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Show Apple build environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+          cmake --version
+
+      - name: Install build tools
+        run: |
+          brew install ninja
+
       - name: Patch LibreSSL syslog for iOS
         run: |
           set -euo pipefail
@@ -65,51 +77,58 @@ jobs:
           from pathlib import Path
           import re
 
-          path = Path("externals/libressl/crypto/mem_clr.c")
+          patches = [
+              (
+                  Path("externals/libressl/crypto/mem_clr.c"),
+                  "ptr",
+                  "len",
+              ),
+              (
+                  Path("externals/libressl/crypto/aes/aes_wrap.c"),
+                  "out",
+                  "inlen",
+              ),
+          ]
 
-          if not path.exists():
-              raise SystemExit("ERROR: LibreSSL mem_clr.c was not found.")
+          for path, pointer, length in patches:
+              if not path.exists():
+                  raise SystemExit(f"ERROR: File not found: {path}")
 
-          text = path.read_text()
+              text = path.read_text()
+              marker = "volatile unsigned char *vptr"
 
-          pattern = re.compile(
-              r"(?m)^([ \t]*)explicit_bzero\(ptr,\s*len\);[ \t]*$"
-          )
+              if marker in text:
+                  print(f"Already patched: {path}")
+                  continue
 
-          if "volatile unsigned char *vptr" in text:
-              print("LibreSSL explicit_bzero already patched.")
-          else:
+              pattern = re.compile(
+                  rf"(?m)^([ \t]*)explicit_bzero\("
+                  rf"{re.escape(pointer)},\s*{re.escape(length)}"
+                  rf"\);[ \t]*$"
+              )
+
               replacement = (
-                  r"\1volatile unsigned char *vptr = "
-                  r"(volatile unsigned char *)ptr;" "\n"
-                  r"\1while (len != 0) {" "\n"
-                  r"\1    *vptr++ = 0;" "\n"
-                  r"\1    len--;" "\n"
-                  r"\1}"
+                  rf"\1volatile unsigned char *vptr = "
+                  rf"(volatile unsigned char *){pointer};\n"
+                  rf"\1while ({length} != 0) {{\n"
+                  rf"\1    *vptr++ = 0;\n"
+                  rf"\1    {length}--;\n"
+                  rf"\1}}"
               )
 
               text, count = pattern.subn(replacement, text, count=1)
 
               if count != 1:
                   raise SystemExit(
-                      "ERROR: Could not find the expected explicit_bzero call."
+                      f"ERROR: Could not find the expected "
+                      f"explicit_bzero({pointer}, {length}) call in {path}"
                   )
 
               path.write_text(text)
-              print("LibreSSL explicit_bzero patched successfully.")
+              print(f"Patched: {path}")
+
+          print("LibreSSL zeroization patches completed.")
           PY
-
-      - name: Show Apple build environment
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-          clang --version
-          cmake --version
-
-      - name: Install build tools
-        run: |
-          brew install ninja
 
       - name: Configure iOS ARM64 build
         run: |
