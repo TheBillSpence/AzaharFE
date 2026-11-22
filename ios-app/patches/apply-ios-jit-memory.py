@@ -41,7 +41,7 @@ class CodeBlock {""",
 )
 source = replace(
     source,
-    "#    if TARGET_OS_IPHONE\\n"
+    "#    if TARGET_OS_IPHONE\n"
     "        m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);",
     """#    if TARGET_OS_IPHONE
         // StikDebug universal.js must grant TXM-executable pages on iOS 27.
