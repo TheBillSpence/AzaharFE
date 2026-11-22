@@ -75,59 +75,102 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
-          patches = [
-              (
-                  Path("externals/libressl/crypto/mem_clr.c"),
-                  "ptr",
-                  "len",
-              ),
-              (
-                  Path("externals/libressl/crypto/aes/aes_wrap.c"),
-                  "out",
-                  "inlen",
-              ),
-          ]
+          root = Path("externals/libressl/crypto")
 
-          for path, pointer, length in patches:
-              if not path.exists():
-                  raise SystemExit(f"ERROR: File not found: {path}")
+          if not root.exists():
+              raise SystemExit("ERROR: LibreSSL crypto folder was not found.")
 
-              text = path.read_text()
-              marker = "volatile unsigned char *vptr"
+          def find_call_end(source, opening):
+              depth = 1
+              i = opening + 1
+              while i < len(source):
+                  char = source[i]
 
-              if marker in text:
-                  print(f"Already patched: {path}")
-                  continue
+                  if char == '"' or char == "'":
+                      quote = char
+                      i += 1
+                      while i < len(source):
+                          if source[i] == "\\":
+                              i += 2
+                              continue
+                          if source[i] == quote:
+                              break
+                          i += 1
+                  elif char == "(":
+                      depth += 1
+                  elif char == ")":
+                      depth -= 1
+                      if depth == 0:
+                          return i
+                  i += 1
+              raise ValueError("Unmatched parentheses in explicit_bzero call")
 
-              pattern = re.compile(
-                  rf"(?m)^([ \t]*)explicit_bzero\("
-                  rf"{re.escape(pointer)},\s*{re.escape(length)}"
-                  rf"\);[ \t]*$"
-              )
+          def split_arguments(source):
+              depth = 0
+              for i, char in enumerate(source):
+                  if char == "(":
+                      depth += 1
+                  elif char == ")":
+                      depth -= 1
+                  elif char == "," and depth == 0:
+                      return source[:i].strip(), source[i + 1:].strip()
+              raise ValueError("Could not split explicit_bzero arguments")
 
-              replacement = (
-                  rf"\1volatile unsigned char *vptr = "
-                  rf"(volatile unsigned char *){pointer};\n"
-                  rf"\1while ({length} != 0) {{\n"
-                  rf"\1    *vptr++ = 0;\n"
-                  rf"\1    {length}--;\n"
-                  rf"\1}}"
-              )
+          patched = 0
 
-              text, count = pattern.subn(replacement, text, count=1)
+          for path in list(root.rglob("*.c")) + list(root.rglob("*.h")):
+              source = path.read_text()
+              output = []
+              position = 0
+              changed = False
 
-              if count != 1:
-                  raise SystemExit(
-                      f"ERROR: Could not find the expected "
-                      f"explicit_bzero({pointer}, {length}) call in {path}"
+              while True:
+                  start = source.find("explicit_bzero", position)
+
+                  if start == -1:
+                      output.append(source[position:])
+                      break
+
+                  before = source[start - 1] if start > 0 else " "
+                  after_name = start + len("explicit_bzero")
+
+                  if (before.isalnum() or before == "_"
+                      or after_name >= len(source)
+                      or source[after_name] != "("):
+                      output.append(source[position:after_name])
+                      position = after_name
+                      continue
+
+                  opening = after_name
+                  ending = find_call_end(source, opening)
+                  first, second = split_arguments(
+                      source[opening + 1:ending]
                   )
 
-              path.write_text(text)
-              print(f"Patched: {path}")
+                  replacement = (
+                      "{ "
+                      "volatile unsigned char *azahar_bzero_p = "
+                      "(volatile unsigned char *)(" + first + "); "
+                      "size_t azahar_bzero_n = (size_t)(" + second + "); "
+                      "while (azahar_bzero_n != 0) { "
+                      "*azahar_bzero_p++ = 0; "
+                      "--azahar_bzero_n; "
+                      "} "
+                      "}"
+                  )
 
-          print("LibreSSL zeroization patches completed.")
+                  output.append(source[position:start])
+                  output.append(replacement)
+                  position = ending + 1
+                  changed = True
+                  patched += 1
+
+              if changed:
+                  path.write_text("".join(output))
+                  print(f"Patched: {path}")
+
+          print(f"Total explicit_bzero calls patched: {patched}")
           PY
 
       - name: Configure iOS ARM64 build
