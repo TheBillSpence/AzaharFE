@@ -1,0 +1,121 @@
+
+name: iOS ARM64 Core Build and Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios-core:
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Azahar
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show Apple build environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+          cmake --version
+
+      - name: Install build tools
+        run: |
+          brew install ninja
+
+      - name: Configure iOS ARM64 build
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build-ios \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_QT=OFF \
+            -DENABLE_SDL2=OFF \
+            -DENABLE_ROOM=OFF \
+            -DENABLE_ROOM_STANDALONE=OFF \
+            -DENABLE_LIBUSB=OFF \
+            -DENABLE_CUBEB=OFF \
+            -DENABLE_OPENAL=OFF \
+            -DENABLE_FFMPEG=OFF \
+            -DENABLE_DISCORD_RPC=OFF \
+            -DENABLE_WEB_SERVICE=OFF \
+            -DENABLE_SCRIPTING=OFF \
+            -DENABLE_GDBSTUB=OFF \
+            -DENABLE_OPENGL=OFF \
+            -DENABLE_VULKAN=OFF \
+            -DENABLE_SOFTWARE_RENDERER=ON \
+            -DENABLE_LTO=OFF \
+            -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
+            -DCITRA_WARNINGS_AS_ERRORS=OFF
+
+      - name: Save CMake configuration
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts
+
+          cp build-ios/CMakeCache.txt \
+            artifacts/CMakeCache.txt
+
+          cmake --build build-ios --target help \
+            > artifacts/available-targets.txt
+
+      - name: Build Azahar core
+        run: |
+          set -euo pipefail
+
+          cmake --build build-ios \
+            --target citra_core \
+            --parallel 3
+
+      - name: Validate ARM64 library
+        run: |
+          set -euo pipefail
+
+          library="$(find build-ios \
+            -name 'libcitra_core.a' \
+            -print -quit)"
+
+          if [[ -z "$library" ]]; then
+            echo "::error::citra_core library was not produced."
+            find build-ios -maxdepth 5 -type f | head -200
+            exit 1
+          fi
+
+          archs="$(lipo -archs "$library")"
+
+          echo "Library: $library"
+          echo "Architectures: $archs"
+
+          lipo -verify_arch arm64 "$library"
+
+          mkdir -p artifacts
+
+          cp "$library" artifacts/libcitra_core-ios-arm64.a
+
+          echo "ARM64 core validation successful."
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-ios-arm64-core-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
