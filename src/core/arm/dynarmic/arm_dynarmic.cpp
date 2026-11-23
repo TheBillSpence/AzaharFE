@@ -14,10 +14,10 @@
 #include <string_view>
 #include <vector>
 #include "citra_libretro/environment.h"
-#include "core/arm/dynarmic/ios_jit_budget.h"
-#include "core/arm/dynarmic/ios_jit_optimizations.h"
-#include "core/arm/dynarmic/ios_jit_microbench.h"
 #include "citra_libretro/ios_perf_profile.h"
+#include "core/arm/dynarmic/ios_jit_budget.h"
+#include "core/arm/dynarmic/ios_jit_microbench.h"
+#include "core/arm/dynarmic/ios_jit_optimizations.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/optimization_flags.h>
@@ -786,16 +786,36 @@ public:
             return 0xEAFFFFFD; // B 0x1000
         return std::nullopt;
     }
-    std::uint8_t MemoryRead8(std::uint32_t) override { return 0; }
-    std::uint16_t MemoryRead16(std::uint32_t) override { return 0; }
-    std::uint32_t MemoryRead32(std::uint32_t) override { return 0; }
-    std::uint64_t MemoryRead64(std::uint32_t) override { return 0; }
-    void MemoryWrite8(std::uint32_t, std::uint8_t) override { unexpected_fault = true; }
-    void MemoryWrite16(std::uint32_t, std::uint16_t) override { unexpected_fault = true; }
-    void MemoryWrite32(std::uint32_t, std::uint32_t) override { unexpected_fault = true; }
-    void MemoryWrite64(std::uint32_t, std::uint64_t) override { unexpected_fault = true; }
-    void InterpreterFallback(std::uint32_t, std::size_t) override { unexpected_fault = true; }
-    void CallSVC(std::uint32_t) override { unexpected_fault = true; }
+    std::uint8_t MemoryRead8(std::uint32_t) override {
+        return 0;
+    }
+    std::uint16_t MemoryRead16(std::uint32_t) override {
+        return 0;
+    }
+    std::uint32_t MemoryRead32(std::uint32_t) override {
+        return 0;
+    }
+    std::uint64_t MemoryRead64(std::uint32_t) override {
+        return 0;
+    }
+    void MemoryWrite8(std::uint32_t, std::uint8_t) override {
+        unexpected_fault = true;
+    }
+    void MemoryWrite16(std::uint32_t, std::uint16_t) override {
+        unexpected_fault = true;
+    }
+    void MemoryWrite32(std::uint32_t, std::uint32_t) override {
+        unexpected_fault = true;
+    }
+    void MemoryWrite64(std::uint32_t, std::uint64_t) override {
+        unexpected_fault = true;
+    }
+    void InterpreterFallback(std::uint32_t, std::size_t) override {
+        unexpected_fault = true;
+    }
+    void CallSVC(std::uint32_t) override {
+        unexpected_fault = true;
+    }
     void ExceptionRaised(std::uint32_t, Dynarmic::A32::Exception) override {
         unexpected_fault = true;
     }
@@ -803,7 +823,9 @@ public:
         charged += ticks;
         ticks_left = ticks >= ticks_left ? 0 : ticks_left - ticks;
     }
-    std::uint64_t GetTicksRemaining() override { return ticks_left; }
+    std::uint64_t GetTicksRemaining() override {
+        return ticks_left;
+    }
 };
 
 } // namespace
@@ -854,8 +876,8 @@ std::string RunIOSJitMicrobenchmark(std::string_view mode) {
                       "PERF27 CPU-only JIT mode=%.*s %.2f M guest ticks/s "
                       "(%.3f ms, %llu ticks; synthetic ARM ALU/branch, no GPU)",
                       static_cast<int>(mode.size()), mode.data(),
-                      static_cast<double>(ticks) / elapsed / 1'000'000.0,
-                      elapsed * 1000.0, static_cast<unsigned long long>(ticks));
+                      static_cast<double>(ticks) / elapsed / 1'000'000.0, elapsed * 1000.0,
+                      static_cast<unsigned long long>(ticks));
         return status;
     } catch (const std::exception& ex) {
         return std::string("PERF27 JIT benchmark could not run: ") + ex.what();

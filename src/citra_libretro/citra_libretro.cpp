@@ -379,8 +379,8 @@ void retro_run() {
     if (gAzaharBenchPending && LibRetro::HasSubmittedSoftwareFrame()) {
         gAzaharBenchPending = false;
         LibRetro::DisplayMessage("PERF27 starting optional on-device CPU-only JIT benchmark");
-        const auto result = Core::RunIOSJitMicrobenchmark(
-            LibRetro::FetchVariable("AzaharJITSpeed", "fast"));
+        const auto result =
+            Core::RunIOSJitMicrobenchmark(LibRetro::FetchVariable("AzaharJITSpeed", "fast"));
         LibRetro::DisplayMessage(result.c_str());
     }
     if (AzaharProfile::Enabled()) {
@@ -390,17 +390,14 @@ void retro_run() {
             const auto stats = AzaharProfile::TakeSnapshot();
             using S = AzaharProfile::Section;
             char report[256];
-            std::snprintf(report, sizeof(report),
-                          "PERF27 %.1fs CPU %.1fms JIT %.1fms init %.1fms SVC %.1fms "
-                          "sched %.1fms PICA %.1fms triangles %.1fms decode %.1fms",
-                          seconds, stats.Milliseconds(S::CoreExecution),
-                          stats.Milliseconds(S::DynarmicJIT),
-                          stats.Milliseconds(S::JITInitialization),
-                          stats.Milliseconds(S::KernelSVC),
-                          stats.Milliseconds(S::KernelScheduler),
-                          stats.Milliseconds(S::PicaCommands),
-                          stats.Milliseconds(S::SoftwareTriangles),
-                          stats.Milliseconds(S::ScreenDecode));
+            std::snprintf(
+                report, sizeof(report),
+                "PERF27 %.1fs CPU %.1fms JIT %.1fms init %.1fms SVC %.1fms "
+                "sched %.1fms PICA %.1fms triangles %.1fms decode %.1fms",
+                seconds, stats.Milliseconds(S::CoreExecution), stats.Milliseconds(S::DynarmicJIT),
+                stats.Milliseconds(S::JITInitialization), stats.Milliseconds(S::KernelSVC),
+                stats.Milliseconds(S::KernelScheduler), stats.Milliseconds(S::PicaCommands),
+                stats.Milliseconds(S::SoftwareTriangles), stats.Milliseconds(S::ScreenDecode));
             LibRetro::DisplayMessage(report);
             std::snprintf(report, sizeof(report),
                           "PERF27 audio DSP %.1fms sink %.1fms; guest RAM callbacks "

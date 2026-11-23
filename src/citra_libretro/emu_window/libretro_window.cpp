@@ -5,8 +5,8 @@
 #ifdef ENABLE_OPENGL
 #include <glad/glad.h>
 #endif
-#include <libretro.h>
 #include <vector>
+#include <libretro.h>
 
 #ifdef IOS
 #include <chrono>
@@ -180,7 +180,7 @@ void EmuWindow_LibRetro::SwapBuffers() {
 
         LibRetro::UploadVideoFrame(data, static_cast<unsigned>(width),
                                    static_cast<unsigned>(height), pitch);
- #ifdef IOS
+#ifdef IOS
         // Sample at most once per five seconds. This avoids expensive logging
         // in the software rasterizer's hottest per-pixel loop.
         static auto sample_started = std::chrono::steady_clock::now();

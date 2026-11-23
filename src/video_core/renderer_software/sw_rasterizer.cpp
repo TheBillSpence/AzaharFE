@@ -124,7 +124,8 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
 #else
       num_sw_threads{std::max(std::thread::hardware_concurrency(), 2U)},
 #endif
-      sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {}
+      sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {
+}
 
 void RasterizerSoftware::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                                      const Pica::OutputVertex& v2) {
