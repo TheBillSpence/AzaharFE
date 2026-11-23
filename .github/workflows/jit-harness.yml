@@ -1,0 +1,64 @@
+name: AzaharFE ARM64 JIT Regression Harness
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-jit-experiment]
+    paths:
+      - 'tools/jit-harness/**'
+      - '.github/workflows/jit-harness.yml'
+      - 'src/core/arm/dynarmic/**'
+permissions:
+  contents: read
+jobs:
+  arm64-jit-tests:
+    name: Run real Dynarmic ARM64 JIT tests
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Checkout exact AzaharFE revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch only pinned Dynarmic and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init --recursive --depth 1 externals/dynarmic
+          git -C externals/dynarmic rev-parse HEAD
+      - name: Verify Apple Silicon host and install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Host machine: $(uname -m)"
+          test "$(uname -m)" = "arm64"
+          brew install ninja boost
+          cmake --version
+          clang++ --version
+      - name: Configure isolated Dynarmic host harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/jit-harness -B build-jit-harness -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.4
+      - name: Compile real ARM32-to-ARM64 JIT tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-jit-harness --target azahar_jit_harness --parallel 3
+          file build-jit-harness/azahar_jit_harness
+      - name: Execute all test cases with per-test timeouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build-jit-harness --output-on-failure \
+            --timeout 25 --output-junit ctest-results.xml
+      - name: Save regression results even if a test fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-jit-host-regression-results
+          path: build-jit-harness/ctest-results.xml
+          if-no-files-found: ignore
+          retention-days: 14
