@@ -12,6 +12,12 @@ on:
       - 'externals/oaknut'
       - '.github/workflows/ios-frontend.yml'
 
+# Avoid spending scarce macOS runners compiling superseded iPhone builds.
+# Keep the newest commit running; manual builds on other refs remain separate.
+concurrency:
+  group: ios-frontend-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
