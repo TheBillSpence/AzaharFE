@@ -7,6 +7,11 @@
 #endif
 #include <libretro.h>
 
+#ifdef IOS
+#include <chrono>
+#include <cstdio>
+#endif
+
 #include "audio_core/audio_types.h"
 #include "citra_libretro/citra_libretro.h"
 #include "citra_libretro/core_settings.h"
@@ -93,6 +98,11 @@ void EmuWindow_LibRetro::SwapBuffers() {
         break;
     }
     case Settings::GraphicsAPI::Software: {
+#ifdef IOS
+        // Measure the complete software composition and video callback,
+        // including the synchronous buffer copy by the iPhone frontend.
+        const auto present_started = std::chrono::steady_clock::now();
+#endif
         retro_framebuffer fb;
         u8* data;
         size_t pitch;
@@ -169,6 +179,29 @@ void EmuWindow_LibRetro::SwapBuffers() {
                                    static_cast<unsigned>(height), pitch);
         if (did_malloc)
             free(data);
+#ifdef IOS
+        // Sample at most once per five seconds. This avoids expensive logging
+        // in the software rasterizer's hottest per-pixel loop.
+        static auto sample_started = std::chrono::steady_clock::now();
+        static std::chrono::steady_clock::duration present_total{};
+        static unsigned present_frames = 0;
+        const auto present_ended = std::chrono::steady_clock::now();
+        present_total += present_ended - present_started;
+        ++present_frames;
+        const auto interval = std::chrono::duration<double>(present_ended - sample_started).count();
+        if (interval >= 5.0) {
+            const double total_ms =
+                std::chrono::duration<double, std::milli>(present_total).count();
+            char report[180];
+            std::snprintf(report, sizeof(report),
+                          "JIT27TRACE software output: %.1f ms/frame average (%u frames in %.1fs)",
+                          total_ms / present_frames, present_frames, interval);
+            LibRetro::DisplayMessage(report);
+            sample_started = present_ended;
+            present_total = {};
+            present_frames = 0;
+        }
+#endif
         break;
     }
     }

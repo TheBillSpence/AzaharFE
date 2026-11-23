@@ -444,6 +444,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             unsigned frameCount = 0;
             auto performanceWindow = nextFrame;
             unsigned emulatedFrames = 0;
+            double coreRunMilliseconds = 0.0;
             uint64_t previousImages = 0;
             bool firstFrame = true;
             if (_jitEnabled) {
@@ -451,12 +452,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 [self scheduleFirstFrameCheckForSession:_playSession started:nextFrame previousSlices:0 initial:YES];
             }
             while (!_stopping.load()) {
+                const auto runStarted = std::chrono::steady_clock::now();
                 @autoreleasepool {
                     _runFrame();
                 }
+                const auto now = std::chrono::steady_clock::now();
                 if (_stopping.load()) break;
                 ++frameCount;
-                auto now = std::chrono::steady_clock::now();
+                const double coreRunMs =
+                    std::chrono::duration<double, std::milli>(now - runStarted).count();
                 if (firstFrame && _receivedFirstVideo) {
                     firstFrame = false;
                     performanceWindow = now;
@@ -464,14 +468,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     [self reportJITStage:@"7/7 First software frame received; measuring FPS"];
                 } else if (!firstFrame) {
                     ++emulatedFrames;
+                    coreRunMilliseconds += coreRunMs;
                     const double seconds = std::chrono::duration<double>(now - performanceWindow).count();
                     if (seconds >= 5.0) {
                         const auto images = _deliveredImages.load(std::memory_order_relaxed);
                         [self writeDiagnostic:[NSString stringWithFormat:
-                            @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs",
-                            emulatedFrames / seconds, (images - previousImages) / seconds, seconds]];
+                            @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs; mean retro_run %.1f ms",
+                            emulatedFrames / seconds, (images - previousImages) / seconds, seconds,
+                            coreRunMilliseconds / emulatedFrames]];
                         performanceWindow = now;
                         emulatedFrames = 0;
+                        coreRunMilliseconds = 0.0;
                         previousImages = images;
                     }
                 }
