@@ -13,6 +13,7 @@ namespace AzaharProfile {
 enum class Section : std::size_t {
     CoreExecution,
     DynarmicJIT,
+    JITInitialization,
     KernelSVC,
     KernelScheduler,
     PicaCommands,
@@ -36,6 +37,9 @@ inline std::atomic<bool> profiling_enabled{false};
 // are collected. The direct-page-table path does not invoke them.
 inline thread_local std::uint64_t guest_reads = 0;
 inline thread_local std::uint64_t guest_writes = 0;
+inline thread_local std::uint64_t guest_code_fetches = 0;
+inline thread_local std::uint64_t tick_queries = 0;
+inline thread_local std::uint64_t tick_commits = 0;
 
 inline bool Enabled() {
     return profiling_enabled.load(std::memory_order_relaxed);
@@ -49,6 +53,9 @@ inline void Configure(bool enabled) {
     }
     guest_reads = 0;
     guest_writes = 0;
+    guest_code_fetches = 0;
+    tick_queries = 0;
+    tick_commits = 0;
     profiling_enabled.store(enabled, std::memory_order_relaxed);
 }
 
@@ -82,6 +89,9 @@ struct Snapshot {
     std::array<std::uint64_t, SectionCount> calls{};
     std::uint64_t reads = 0;
     std::uint64_t writes = 0;
+    std::uint64_t code_fetches = 0;
+    std::uint64_t timer_queries = 0;
+    std::uint64_t timer_commits = 0;
 
     double Milliseconds(Section section) const {
         return static_cast<double>(ns[static_cast<std::size_t>(section)]) / 1'000'000.0;
@@ -96,8 +106,14 @@ inline Snapshot TakeSnapshot() {
     }
     result.reads = guest_reads;
     result.writes = guest_writes;
+    result.code_fetches = guest_code_fetches;
+    result.timer_queries = tick_queries;
+    result.timer_commits = tick_commits;
     guest_reads = 0;
     guest_writes = 0;
+    guest_code_fetches = 0;
+    tick_queries = 0;
+    tick_commits = 0;
     return result;
 }
 } // namespace AzaharProfile

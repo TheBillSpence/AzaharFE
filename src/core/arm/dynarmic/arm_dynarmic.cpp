@@ -106,6 +106,8 @@ public:
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
 #ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_code_fetches;
         // A code fetch identifies where translation has reached, even when Run()
         // has yet to return. Limit output to the first 12 page changes per core.
         const u32 page = vaddr >> 12;
@@ -301,6 +303,10 @@ public:
     }
 
     void AddTicks(std::uint64_t ticks) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::tick_commits;
+#endif
         parent.GetTimer().AddTicks(ticks);
 #ifdef IOS
         if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
@@ -317,6 +323,10 @@ public:
 #endif
     }
     std::uint64_t GetTicksRemaining() override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::tick_queries;
+#endif
         const s64 ticks = parent.GetTimer().GetDowncount();
 #ifdef IOS
         if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
@@ -749,6 +759,7 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
 
 #ifdef IOS
     LibRetro::DisplayMessage("JIT27TRACE Dynarmic::MakeJit allocating code cache");
+    AzaharProfile::Scope jit_init_profile{AzaharProfile::Section::JITInitialization};
 #endif
     auto created_jit = std::make_unique<Dynarmic::A32::Jit>(config);
 #ifdef IOS

@@ -391,10 +391,11 @@ void retro_run() {
             using S = AzaharProfile::Section;
             char report[256];
             std::snprintf(report, sizeof(report),
-                          "PERF27 %.1fs CPU %.1fms JIT %.1fms SVC %.1fms "
+                          "PERF27 %.1fs CPU %.1fms JIT %.1fms init %.1fms SVC %.1fms "
                           "sched %.1fms PICA %.1fms triangles %.1fms decode %.1fms",
                           seconds, stats.Milliseconds(S::CoreExecution),
                           stats.Milliseconds(S::DynarmicJIT),
+                          stats.Milliseconds(S::JITInitialization),
                           stats.Milliseconds(S::KernelSVC),
                           stats.Milliseconds(S::KernelScheduler),
                           stats.Milliseconds(S::PicaCommands),
@@ -402,11 +403,17 @@ void retro_run() {
                           stats.Milliseconds(S::ScreenDecode));
             LibRetro::DisplayMessage(report);
             std::snprintf(report, sizeof(report),
-                          "PERF27 audio DSP %.1fms sink %.1fms; JIT guest RAM callbacks "
-                          "read=%llu write=%llu (per core thread)",
+                          "PERF27 audio DSP %.1fms sink %.1fms; guest RAM callbacks "
+                          "read=%llu write=%llu (emulation thread)",
                           stats.Milliseconds(S::DSPMix), stats.Milliseconds(S::AudioOutput),
                           static_cast<unsigned long long>(stats.reads),
                           static_cast<unsigned long long>(stats.writes));
+            LibRetro::DisplayMessage(report);
+            std::snprintf(report, sizeof(report),
+                          "PERF27 JIT compile/code fetch=%llu; timer queries=%llu commits=%llu",
+                          static_cast<unsigned long long>(stats.code_fetches),
+                          static_cast<unsigned long long>(stats.timer_queries),
+                          static_cast<unsigned long long>(stats.timer_commits));
             LibRetro::DisplayMessage(report);
             gAzaharProfileWindow = now;
         }

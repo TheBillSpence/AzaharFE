@@ -291,3 +291,10 @@ thermal conditions to compare JIT dispatch overhead. The benchmark briefly
 pauses gameplay and uses an additional temporary JIT code cache. Turn
 profiling OFF for normal FPS benchmarking and use direct RAM only with backed-up
 saves.
+
+The detailed profiler also reports JIT object initialization time, generated
+code fetch/translation callback counts, and scheduler timer budget-query /
+commit callback counts. These counts are per emulation thread, useful for
+comparing Fast, Turbo and Direct RAM under the same game scene. They do not
+measure internal Dynarmic code-generation time separately; JIT compilation
+can occur inside a JIT `Run` interval, while `init` measures construction.
