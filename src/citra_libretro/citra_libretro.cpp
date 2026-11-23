@@ -36,6 +36,7 @@
 #include <chrono>
 #include <cstdio>
 #include "citra_libretro/ios_perf_profile.h"
+#include "core/arm/dynarmic/ios_jit_microbench.h"
 #endif
 
 #include "common/arch.h"
@@ -375,6 +376,13 @@ void retro_run() {
     if (trace_jit_first_frame) {
         LibRetro::DisplayMessage("JIT27TRACE video frame submitted");
     }
+    if (gAzaharBenchPending && LibRetro::HasSubmittedSoftwareFrame()) {
+        gAzaharBenchPending = false;
+        LibRetro::DisplayMessage("PERF27 starting optional on-device CPU-only JIT benchmark");
+        const auto result = Core::RunIOSJitMicrobenchmark(
+            LibRetro::FetchVariable("AzaharJITSpeed", "fast"));
+        LibRetro::DisplayMessage(result.c_str());
+    }
     if (AzaharProfile::Enabled()) {
         const auto now = AzaharProfile::Clock::now();
         const double seconds = std::chrono::duration<double>(now - gAzaharProfileWindow).count();
@@ -383,11 +391,12 @@ void retro_run() {
             using S = AzaharProfile::Section;
             char report[256];
             std::snprintf(report, sizeof(report),
-                          "PERF27 %.1fs CPU %.1fms JIT %.1fms SVC %.1fms PICA %.1fms "
-                          "triangles %.1fms decode %.1fms",
+                          "PERF27 %.1fs CPU %.1fms JIT %.1fms SVC %.1fms "
+                          "sched %.1fms PICA %.1fms triangles %.1fms decode %.1fms",
                           seconds, stats.Milliseconds(S::CoreExecution),
                           stats.Milliseconds(S::DynarmicJIT),
                           stats.Milliseconds(S::KernelSVC),
+                          stats.Milliseconds(S::KernelScheduler),
                           stats.Milliseconds(S::PicaCommands),
                           stats.Milliseconds(S::SoftwareTriangles),
                           stats.Milliseconds(S::ScreenDecode));

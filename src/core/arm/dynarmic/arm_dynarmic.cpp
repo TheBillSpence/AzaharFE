@@ -7,12 +7,16 @@
 #ifdef IOS
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <vector>
 #include "citra_libretro/environment.h"
 #include "core/arm/dynarmic/ios_jit_budget.h"
 #include "core/arm/dynarmic/ios_jit_optimizations.h"
+#include "core/arm/dynarmic/ios_jit_microbench.h"
 #include "citra_libretro/ios_perf_profile.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
@@ -752,5 +756,100 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
 #endif
     return created_jit;
 }
+
+#ifdef IOS
+namespace {
+
+// Two real ARM32 instructions: ADD r0,r0,#1; B 0x1000.
+// No graphics, HLE, RAM or guest operating-system activity is involved.
+class MicrobenchmarkCallbacks final : public Dynarmic::A32::UserCallbacks {
+public:
+    std::uint64_t ticks_left = 0;
+    std::uint64_t charged = 0;
+    bool unexpected_fault = false;
+
+    std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override {
+        if (address == 0x1000)
+            return 0xE2800001; // ADD r0, r0, #1
+        if (address == 0x1004)
+            return 0xEAFFFFFD; // B 0x1000
+        return std::nullopt;
+    }
+    std::uint8_t MemoryRead8(std::uint32_t) override { return 0; }
+    std::uint16_t MemoryRead16(std::uint32_t) override { return 0; }
+    std::uint32_t MemoryRead32(std::uint32_t) override { return 0; }
+    std::uint64_t MemoryRead64(std::uint32_t) override { return 0; }
+    void MemoryWrite8(std::uint32_t, std::uint8_t) override { unexpected_fault = true; }
+    void MemoryWrite16(std::uint32_t, std::uint16_t) override { unexpected_fault = true; }
+    void MemoryWrite32(std::uint32_t, std::uint32_t) override { unexpected_fault = true; }
+    void MemoryWrite64(std::uint32_t, std::uint64_t) override { unexpected_fault = true; }
+    void InterpreterFallback(std::uint32_t, std::size_t) override { unexpected_fault = true; }
+    void CallSVC(std::uint32_t) override { unexpected_fault = true; }
+    void ExceptionRaised(std::uint32_t, Dynarmic::A32::Exception) override {
+        unexpected_fault = true;
+    }
+    void AddTicks(std::uint64_t ticks) override {
+        charged += ticks;
+        ticks_left = ticks >= ticks_left ? 0 : ticks_left - ticks;
+    }
+    std::uint64_t GetTicksRemaining() override { return ticks_left; }
+};
+
+} // namespace
+
+std::string RunIOSJitMicrobenchmark(std::string_view mode) {
+    try {
+        MicrobenchmarkCallbacks callbacks;
+        Dynarmic::A32::UserConfig config;
+        config.callbacks = &callbacks;
+        config.code_cache_size = 16 * 1024 * 1024;
+        config.enable_cycle_counting = true;
+        config.always_little_endian = true;
+        config.optimizations = SelectIOSJitOptimizations(config.optimizations, mode);
+        Dynarmic::A32::Jit cpu(config);
+        cpu.Regs().fill(0);
+        cpu.Regs()[15] = 0x1000;
+        cpu.SetCpsr(0x10);
+
+        // Compile the loop before timing. Run through the same safe-exit
+        // registry as gameplay, in case the user stops during the benchmark.
+        callbacks.ticks_left = 4096;
+        {
+            AzaharScopedJITRun active_jit{&cpu};
+            cpu.Run();
+        }
+        if (callbacks.unexpected_fault || callbacks.charged < 4096)
+            return "PERF27 JIT benchmark failed warmup correctness test";
+
+        constexpr unsigned kPasses = 8;
+        constexpr std::uint64_t kBudget = 262144;
+        const auto before_ticks = callbacks.charged;
+        const auto started = std::chrono::steady_clock::now();
+        for (unsigned pass = 0; pass < kPasses; ++pass) {
+            callbacks.ticks_left = kBudget;
+            AzaharScopedJITRun active_jit{&cpu};
+            cpu.Run();
+            if (callbacks.unexpected_fault)
+                return "PERF27 JIT benchmark raised an unexpected fault";
+        }
+        const auto finished = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration<double>(finished - started).count();
+        const auto ticks = callbacks.charged - before_ticks;
+        if (ticks < kPasses * kBudget || elapsed <= 0.0)
+            return "PERF27 JIT benchmark did not complete its guest cycle budgets";
+
+        char status[240];
+        std::snprintf(status, sizeof(status),
+                      "PERF27 CPU-only JIT mode=%.*s %.2f M guest ticks/s "
+                      "(%.3f ms, %llu ticks; synthetic ARM ALU/branch, no GPU)",
+                      static_cast<int>(mode.size()), mode.data(),
+                      static_cast<double>(ticks) / elapsed / 1'000'000.0,
+                      elapsed * 1000.0, static_cast<unsigned long long>(ticks));
+        return status;
+    } catch (const std::exception& ex) {
+        return std::string("PERF27 JIT benchmark could not run: ") + ex.what();
+    }
+}
+#endif
 
 } // namespace Core

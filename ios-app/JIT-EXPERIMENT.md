@@ -275,3 +275,19 @@ The precompiled atomic host spinlock fix, working JIT memory mapping, cycle
 accounting and compatibility fallback are untouched. No Metal/Vulkan was
 enabled. Timing reports help find whether further JIT, software raster,
 DSP or HLE optimizations are warranted; no speedup is assumed without tests.
+
+## Opt-in on-device CPU-only JIT microbenchmark
+
+When Detailed CPU/GPU profiling is turned ON for a JIT session, the native
+libretro core runs a **one-time microbenchmark after the first video frame**.
+It uses the real patched Dynarmic ARM32-to-ARM64 JIT on iPhone and a small
+finite-budget ARM instruction loop (ADD and branch), with cycle counting and
+the same compiled host lock/JIT safe-exit registry. The warmup compilation is
+excluded from the timed sample; the workload runs eight 262,144-tick JIT
+slices. `PERF27 CPU-only JIT mode=...` prints guest ticks/second. It
+has no graphics, guest OS, audio or RAM, and does **not** represent actual
+game FPS or compare directly with Dyncom. Run different presets under similar
+thermal conditions to compare JIT dispatch overhead. The benchmark briefly
+pauses gameplay and uses an additional temporary JIT code cache. Turn
+profiling OFF for normal FPS benchmarking and use direct RAM only with backed-up
+saves.

@@ -576,6 +576,9 @@ void System::Reschedule() {
     if (!curr_core_reschedule_pending) {
         return;
     }
+#ifdef IOS
+    AzaharProfile::Scope scheduler_profile{AzaharProfile::Section::KernelScheduler};
+#endif
 
     curr_core_reschedule_pending = false;
     kernel->GetThreadManager(running_core->GetID()).Reschedule();

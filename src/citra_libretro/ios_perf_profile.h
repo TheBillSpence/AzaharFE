@@ -14,6 +14,7 @@ enum class Section : std::size_t {
     CoreExecution,
     DynarmicJIT,
     KernelSVC,
+    KernelScheduler,
     PicaCommands,
     SoftwareTriangles,
     ScreenDecode,
