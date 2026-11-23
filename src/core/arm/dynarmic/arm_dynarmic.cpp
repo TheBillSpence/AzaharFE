@@ -422,9 +422,19 @@ void ARM_Dynarmic::ServeBreak([[maybe_unused]] int signal) {
 std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     Dynarmic::A32::UserConfig config;
 #ifdef IOS
-    // 4 MiB was below Dynarmic's documented ~8 MiB minimum.
-    // 16 MiB per code cache balances A13 RAM and room for generated code.
+    // 16 MiB avoids Dynarmic's documented ~8 MiB minimum.
     config.code_cache_size = 16 * 1024 * 1024;
+    // Build #18 confirmed 512 generated guest instructions execute correctly,
+    // but full jit->Run() never returns from a tight PC 0x00100034..0x3c loop.
+    // Disable direct block linking, return-stack prediction and fast dispatch
+    // temporarily to force execution through the dispatcher, which checks the
+    // cycle budget. Keep other safe IR optimizations and cycle counting on.
+    config.optimizations = config.optimizations &
+        ~(Dynarmic::OptimizationFlag::BlockLinking |
+          Dynarmic::OptimizationFlag::ReturnStackBuffer |
+          Dynarmic::OptimizationFlag::FastDispatch);
+    config.enable_cycle_counting = true;
+    LibRetro::DisplayMessage("JIT27TRACE conservative dispatcher mode; block linking OFF");
 #endif
     config.callbacks = cb.get();
     if (current_page_table) {

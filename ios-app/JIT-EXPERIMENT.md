@@ -93,3 +93,25 @@ using the actual bundle version. The GitHub Actions packaging workflow
 stamps `CFBundleVersion` from `GITHUB_RUN_NUMBER` automatically; this commit
 targets Build #18. Controls reserve the badge area above the iPhone safe
 bottom inset. The Build #17 512-step Dynarmic diagnostics remain intact.
+
+## Build after #18: conservative Dynarmic dispatcher
+
+Build #18 on the user's A13 / iOS 27.2.1 completed all 512 JIT single
+steps. Guest PC spent many steps cycling around 0x00100034..0x0010003c
+while the timer downcount decreased by one each step. The first full
+`jit->Run()` again failed to return, despite a positive 374845-cycle
+budget.
+
+This follow-up temporarily disables Dynarmic's BlockLinking,
+ReturnStackBuffer, and FastDispatch optimization flags, while retaining
+the other safe IR optimizations and explicitly enabling cycle counting.
+This forces basic-block terminals through the generated dispatcher.
+In pinned Dynarmic, the `LinkBlockFast` path can directly branch to
+another generated block without the explicit Xticks check used by the
+regular `LinkBlock` path. This is a diagnostic hypothesis, not a
+confirmed root cause.
+
+The Build #18 responsive game UI, persistent version label, 512-step
+probe, and stable master branch remain unchanged. The expected outcome
+is the first `Dynarmic::Run returned` trace, or more detail proving
+that direct linking was not the cause.
