@@ -49,7 +49,9 @@ bool GetSoftwareFramebuffer(retro_framebuffer* fb, int width, int height) {
 void UploadVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch) {
     video_cb(data, width, height, pitch);
 #ifdef IOS
-    if (data && data != RETRO_HW_FRAME_BUFFER_VALID && width && height && pitch) {
+    // The on-device CPU-only benchmark may start after the first GPU frame,
+    // not just the software-rendered frames used by earlier iOS builds.
+    if (data && width && height && (pitch || data == RETRO_HW_FRAME_BUFFER_VALID)) {
         submitted_software_frame.store(true, std::memory_order_relaxed);
     }
 #endif

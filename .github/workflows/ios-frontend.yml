@@ -175,6 +175,18 @@ jobs:
           fi
           echo "Verified JIT halt bridge export in $dylib"
 
+      - name: Verify MoltenVK frontend bridge exports
+        run: |
+          set -euo pipefail
+          dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
+          test -n "$dylib"
+          for sym in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_shutdown; do
+            if ! xcrun nm -gU "$dylib" | grep -E "(^|[[:space:]])_${sym}$"; then
+              echo "::error::MoltenVK interface export is missing: $sym"
+              exit 1
+            fi
+          done
+
       - name: Bundle the software core and package unsigned IPA
         run: |
           set -euo pipefail

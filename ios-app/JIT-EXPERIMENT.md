@@ -298,3 +298,29 @@ commit callback counts. These counts are per emulation thread, useful for
 comparing Fast, Turbo and Direct RAM under the same game scene. They do not
 measure internal Dynarmic code-generation time separately; JIT compilation
 can occur inside a JIT `Run` interval, while `init` measures construction.
+
+## iPhone Vulkan / MoltenVK experiment (first-stage GPU acceleration)
+
+Graphics API: **Software (default)** or **Vulkan via MoltenVK (experimental)**,
+available globally and as per-game overrides. The iOS ARM64 libretro core
+builds the existing Azahar PICA200 Vulkan rasterizer with the pinned
+MoltenVK 1.4.1 static framework, not a newly written 3DS graphics backend.
+The native iOS frontend creates an offscreen Vulkan instance/device through
+the libretro Vulkan v1 negotiation interface, supplies the Vulkan hw-render
+interface to the core, and initializes the renderer after a successful ROM
+metadata check. Vulkan output is copied into CPU-visible memory and delivered
+to the existing UIImage frontend. This initial readback may be expensive; it
+does NOT yet provide zero-copy CAMetalLayer presentation.
+
+The software rasterizer remains the default. If MoltenVK initialization
+fails before emulation begins, the frontend deinitializes the unused Vulkan
+core, retries the same game with the software renderer, and records a
+JIT27TRACE fallback message. A runtime shader/pipeline failure or unsupported
+device capability may still require the user to select Software manually.
+Back up saves when testing experimental graphics; enabling Vulkan can expose
+driver/renderer errors that the software path does not encounter.
+
+No changes were made to the JIT memory patch, native atomic exclusive monitor
+or on-device StikDebug authorization process. The new Vulkan option must not
+be described as working on iPhone until its iOS build AND on-device rendering
+have been tested. A successful GitHub build alone confirms only compilation.

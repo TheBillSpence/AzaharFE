@@ -9,6 +9,7 @@
 
 #if defined(IOS) && defined(ENABLE_VULKAN)
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -298,10 +299,10 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height,
             vkUnmapMemory(state.device, memory);
         }
     }
-    if (memory)
-        vkFreeMemory(state.device, memory, nullptr);
     if (buffer)
         vkDestroyBuffer(state.device, buffer, nullptr);
+    if (memory)
+        vkFreeMemory(state.device, memory, nullptr);
     return okay;
 }
 
