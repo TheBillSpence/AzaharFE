@@ -135,3 +135,24 @@ it will slow emulation and should be removed when the issue is solved.
 
 Keep testing with StikDebug universal.js on iOS 27.2.1. The Build #18
 adaptive UI and the persistent build counter remain unchanged.
+
+## Build #21: progressive JIT cycle-budget test
+
+Build #20 on iOS 27.2.1 / iPhone 11 Pro Max passed the first full
+`Dynarmic::Run` with `GetTicksRemaining()` capped at 64 cycles. The
+first trace showed `AddTicks(65)` and `first full Dynarmic::Run returned`.
+This confirms genuine continuous generated-code execution and cycle
+accounting with short slices, but not yet successful video rendering.
+
+Build #21 tests successively larger cycle budgets over repeated full JIT
+runs: 64, 256, 1024, 4096, 16384, 65536, and 262144 ticks, 16 runs per
+stage. It writes a `JIT27TRACE budget test stage=... budget=... entered`
+line before the first run at each size and a `returned` line when
+that run completes. If it freezes, the last stage identifies the first
+budget that was too large for the current code path. A thread-local
+setting passes the budget to the existing Dynarmic timer callback. The
+512 single-step preflight is retained for diagnostic consistency.
+
+The ramp is a diagnostic, NOT an FPS setting. It does not establish a
+reliable maximum until verified on device. Adaptive UI and build
+counter remain in place; stable master remains unchanged.

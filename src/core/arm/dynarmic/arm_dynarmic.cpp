@@ -40,6 +40,9 @@ namespace Core {
 // Start tracing timer callbacks only when the first full guest JIT run begins.
 // Single-step uses a separate code path and isn't representative here.
 static std::atomic<bool> gAzaharJITFullRunStarted{false};
+// Set immediately before a JIT Run on the same emulation thread. Dynarmic's
+// GetTicksRemaining callback reads this limit inside the generated prelude.
+static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
 #endif
 
 class DynarmicUserCallbacks final : public Dynarmic::A32::UserCallbacks {
@@ -191,12 +194,12 @@ public:
         const s64 ticks = parent.GetTimer().GetDowncount();
 #ifdef IOS
         if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
-            // Diagnostic limit: the full run entered with ~375k cycles.
-            // Test whether a 64-cycle guest slice can reach the generated
-            // return-to-host path on the A13 / iOS 27.2.1.
-            constexpr std::uint64_t kJITTestSlice = 64;
+            // Adaptive diagnostic: the Run caller ramps the cap only after
+            // previous short runs returned successfully. Keep this per-thread
+            // so other emulator threads cannot overwrite the active budget.
             const auto remaining = static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
-            const auto limited = remaining < kJITTestSlice ? remaining : kJITTestSlice;
+            const auto limited = remaining < gAzaharJITBudgetCap
+                                     ? remaining : gAzaharJITBudgetCap;
             static std::atomic<unsigned> trace_count{0};
             if (trace_count.fetch_add(1, std::memory_order_relaxed) < 3) {
                 char info[170];
@@ -271,20 +274,45 @@ void ARM_Dynarmic::Run() {
         }
         return;
     }
-    if (probe == kStepProbeCount) {
-        char status[192];
-        std::snprintf(status, sizeof(status),
-                      "JIT27TRACE first full Dynarmic::Run entered core=%u pc=0x%08x ticks=%lld",
-                      GetID(), jit->Regs()[15],
-                      static_cast<long long>(GetTimer().GetDowncount()));
-        LibRetro::DisplayMessage(status);
-        gAzaharJITFullRunStarted.store(true, std::memory_order_release);
+    if (probe >= kStepProbeCount) {
+        // Run 16 full JIT slices at each tested budget. If a later budget
+        // freezes, the last "entered" trace identifies the failing stage.
+        // This is NOT a final FPS optimization: full ~375k ticks stays off.
+        constexpr std::uint64_t kBudgets[] =
+            {64, 256, 1024, 4096, 16384, 65536, 262144};
+        constexpr unsigned kRunsPerStage = 16;
+        const unsigned run_index = probe - kStepProbeCount;
+        const unsigned stage_number = run_index / kRunsPerStage;
+        constexpr unsigned kLastStage = sizeof(kBudgets) / sizeof(kBudgets[0]) - 1;
+        const unsigned stage = stage_number > kLastStage ? kLastStage : stage_number;
+        gAzaharJITBudgetCap = kBudgets[stage];
+        if (probe == kStepProbeCount) {
+            gAzaharJITFullRunStarted.store(true, std::memory_order_release);
+        }
+        if (run_index == 0 || run_index % kRunsPerStage == 0) {
+            char status[200];
+            std::snprintf(status, sizeof(status),
+                          "JIT27TRACE budget test stage=%u run=%u core=%u pc=0x%08x budget=%llu entered",
+                          stage + 1, run_index + 1, GetID(), jit->Regs()[15],
+                          static_cast<unsigned long long>(gAzaharJITBudgetCap));
+            LibRetro::DisplayMessage(status);
+        }
     }
 #endif
     jit->Run();
 #ifdef IOS
     if (probe == kStepProbeCount) {
         LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run returned");
+    }
+    if (probe >= kStepProbeCount) {
+        const unsigned run_index = probe - kStepProbeCount;
+        if (run_index == 0 || run_index % 16 == 0) {
+            char status[200];
+            std::snprintf(status, sizeof(status),
+                          "JIT27TRACE budget test run=%u core=%u pc=0x%08x returned",
+                          run_index + 1, GetID(), jit->Regs()[15]);
+            LibRetro::DisplayMessage(status);
+        }
     }
 #endif
 }
