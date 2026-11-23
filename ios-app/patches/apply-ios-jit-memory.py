@@ -125,7 +125,7 @@ source = replace(
 # 16 KiB ARM64 test (returned 42 on iOS 27.2.1 / A13).
 source = replace(
     source,
-    "#if defined(__APPLE__)\\n        sys_icache_invalidate(mem, size);",
+    "#if defined(__APPLE__)\n        sys_icache_invalidate(mem, size);",
     """#if defined(__APPLE__) && TARGET_OS_IPHONE
         const auto offset = reinterpret_cast<std::uintptr_t>(mem) -
                             reinterpret_cast<std::uintptr_t>(m_memory);
