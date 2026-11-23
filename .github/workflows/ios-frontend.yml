@@ -21,10 +21,19 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout Azahar and submodules
+      - name: Check out Azahar
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
+
+      - name: Fetch pinned submodules
+        env:
+          GIT_HTTP_LOW_SPEED_LIMIT: '1024'
+          GIT_HTTP_LOW_SPEED_TIME: '120'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git -c 'url.https://github.com/.insteadOf=git@github.com:' \
+            submodule update --init --recursive --depth 1 --jobs 4
 
       - name: Install build tools
         run: brew install ninja xcodegen
