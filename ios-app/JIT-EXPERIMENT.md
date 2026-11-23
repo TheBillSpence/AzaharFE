@@ -65,3 +65,17 @@ for exactly one guest instruction, reports whether it returned, then
 allows normal full-slice runs. Oaknut now invalidates both the writable
 and executable aliases after code emission and link patching. This
 build has not yet been tested on device.
+
+## Build after #16: 512-instruction JIT diagnostic
+
+The A13 / iOS 27.2.1 test showed successful native ARM64 RX execution, then
+completed the first Dynarmic JIT single-step and first `System::RunLoop`.
+It subsequently stopped inside the first full-speed `Dynarmic::Run`.
+
+Before calling full-speed `Run`, the experimental frontend now executes
+512 bounded guest instructions through `jit->Step()` in successive core
+scheduler slices. It logs selected step numbers together with core ID,
+guest PC, and timer downcount before/after stepping. This distinguishes a
+specific instruction/core failure from a problem in continuous execution.
+After step 512 it restores normal full-speed `jit->Run()` for comparison.
+The 512-step diagnostic is temporary, not a performance optimization.

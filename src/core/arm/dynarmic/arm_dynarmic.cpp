@@ -6,6 +6,7 @@
 #include <cstring>
 #ifdef IOS
 #include <atomic>
+#include <cstdio>
 #include "citra_libretro/environment.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
@@ -201,24 +202,48 @@ void ARM_Dynarmic::Run() {
     }
 
 #ifdef IOS
-    // On the very first execution, step exactly one 3DS instruction via
-    // Dynarmic's generated-code path to distinguish an immediate JIT fault
-    // from a full-slice loop that never yields. This is diagnostic only.
+    // Build #16: one generated guest instruction returned, while the
+    // first full Dynarmic::Run never returned. Step through several
+    // hundred guest instructions first to determine whether this is
+    // an individual instruction, core, or full-dispatch-loop failure.
+    // Limit logs so the iPhone's Documents file stays manageable.
     static std::atomic<unsigned> run_probe_count{0};
+    constexpr unsigned kStepProbeCount = 512;
     const unsigned probe = run_probe_count.fetch_add(1, std::memory_order_relaxed);
-    if (probe == 0) {
-        LibRetro::DisplayMessage("JIT27TRACE first Dynarmic::Step (via Run) entered");
+    const bool trace_probe = probe < 4 || probe == 15 || probe == 63 ||
+                             probe == 255 || probe == kStepProbeCount - 1;
+    if (probe < kStepProbeCount) {
+        if (trace_probe) {
+            char status[192];
+            std::snprintf(status, sizeof(status),
+                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld entered",
+                          probe + 1, kStepProbeCount, GetID(), jit->Regs()[15],
+                          static_cast<long long>(GetTimer().GetDowncount()));
+            LibRetro::DisplayMessage(status);
+        }
         jit->Step();
-        LibRetro::DisplayMessage("JIT27TRACE first Dynarmic::Step (via Run) returned");
+        if (trace_probe) {
+            char status[192];
+            std::snprintf(status, sizeof(status),
+                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld returned",
+                          probe + 1, kStepProbeCount, GetID(), jit->Regs()[15],
+                          static_cast<long long>(GetTimer().GetDowncount()));
+            LibRetro::DisplayMessage(status);
+        }
         return;
     }
-    if (probe == 1) {
-        LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run entered");
+    if (probe == kStepProbeCount) {
+        char status[192];
+        std::snprintf(status, sizeof(status),
+                      "JIT27TRACE first full Dynarmic::Run entered core=%u pc=0x%08x ticks=%lld",
+                      GetID(), jit->Regs()[15],
+                      static_cast<long long>(GetTimer().GetDowncount()));
+        LibRetro::DisplayMessage(status);
     }
 #endif
     jit->Run();
 #ifdef IOS
-    if (probe == 1) {
+    if (probe == kStepProbeCount) {
         LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run returned");
     }
 #endif
