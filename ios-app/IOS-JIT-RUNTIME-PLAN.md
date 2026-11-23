@@ -89,3 +89,15 @@ No `master` edits. No claim that a green CI build proves on-device JIT.
 No live JIT-to-interpreter switch inside a generated execution stack.
 `HaltExecution` is cooperative: if native code is truly uninterruptible,
 the user may still have to relaunch the app.
+
+## Build #26 evidence-based next experiment
+
+The previous test's watchdog fired but run 80 did not return. The
+cooperative halt request is not proof that it reached a registered
+JIT, and even a delivered request cannot interrupt an ARM64 function
+which does not observe a halt condition. Build #26 acknowledges both
+layers, and executes run 80's next 1,024 guest instructions one by one
+through Dynarmic's separate JIT Step() path. The first non-returning
+step localizes the transition; if all return, the next comparison is
+normal Run dispatcher and longer guest blocks. Prefer reproducible
+JIT/interpreter state comparisons before replacing the code generator.

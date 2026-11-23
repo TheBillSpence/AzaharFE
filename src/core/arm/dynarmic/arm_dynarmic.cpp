@@ -67,8 +67,17 @@ private:
     Dynarmic::A32::Jit* current;
 };
 void AzaharRequestRunningJITToHalt() {
-    std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
-    for (auto* running : gAzaharActiveJITs) running->HaltExecution();
+    unsigned active = 0;
+    {
+        std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
+        active = static_cast<unsigned>(gAzaharActiveJITs.size());
+        for (auto* running : gAzaharActiveJITs) running->HaltExecution();
+    }
+    // Report after releasing the lock (frontend callback acquires ObjC locks).
+    char message[128];
+    std::snprintf(message, sizeof(message),
+                  "JIT27TRACE host halt request delivered active_jits=%u", active);
+    LibRetro::DisplayMessage(message);
 }
 #endif
 
@@ -347,6 +356,46 @@ void ARM_Dynarmic::Run() {
         }
         return;
     }
+    // Build #26: full JIT run 80 consistently stalls; cross its boundary
+    // using Dynarmic's separate ARM64 single-step recompiler path.
+    constexpr unsigned kTargetRun = kStepProbeCount + 79;
+    constexpr unsigned kTargetStepCount = 1024;
+    if (probe >= kTargetRun && probe < kTargetRun + kTargetStepCount) {
+        const unsigned n = probe - kTargetRun;
+        const bool trace = n < 24 || n == 31 || n == 63 || n == 127 ||
+                           n == 255 || n == 511 || n == 767 ||
+                           n == kTargetStepCount - 1;
+        if (n == 0) {
+            LibRetro::DisplayMessage(
+                "JIT27TRACE run80 targeted single-step probe started; 1024 instructions");
+        }
+        if (trace) {
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x r1=0x%08x lr=0x%08x ticks=%lld entered",
+                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(),
+                          GetReg(0), GetReg(1), GetReg(14),
+                          static_cast<long long>(GetTimer().GetDowncount()));
+            LibRetro::DisplayMessage(message);
+        }
+        AzaharScopedJITRun active_step{jit};
+        const auto reason = jit->Step();
+        if (trace) {
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x r1=0x%08x lr=0x%08x ticks=%lld returned reason=0x%x",
+                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(),
+                          GetReg(0), GetReg(1), GetReg(14),
+                          static_cast<long long>(GetTimer().GetDowncount()),
+                          static_cast<unsigned>(reason));
+            LibRetro::DisplayMessage(message);
+        }
+        if (n + 1 == kTargetStepCount) {
+            LibRetro::DisplayMessage(
+                "JIT27TRACE run80 probe completed; resuming 256-tick JIT slices");
+        }
+        return;
+    }
     bool trace_budget_stage = false;
     if (probe >= kStepProbeCount) {
         // Run 16 full JIT slices at each tested budget. If a later budget
@@ -359,14 +408,18 @@ void ARM_Dynarmic::Run() {
         const unsigned stage_number = run_index / kRunsPerStage;
         constexpr unsigned kLastStage = sizeof(kBudgets) / sizeof(kBudgets[0]) - 1;
         const unsigned stage = stage_number > kLastStage ? kLastStage : stage_number;
-        gAzaharJITBudgetCap = kBudgets[stage];
+        gAzaharJITBudgetCap = probe >= kTargetRun + kTargetStepCount
+                                  ? 256 : kBudgets[stage];
         if (probe == kStepProbeCount) {
             gAzaharJITFullRunStarted.store(true, std::memory_order_release);
         }
         // Sample every run in the 16K stage: the previous black screen was
         // observed between its first return and the next stage marker.
-        trace_budget_stage = stage_number <= kLastStage &&
-                             (run_index % kRunsPerStage == 0 || gAzaharJITBudgetCap == 16384);
+        trace_budget_stage = (stage_number <= kLastStage &&
+                              (run_index % kRunsPerStage == 0 || gAzaharJITBudgetCap == 16384)) ||
+                             (probe >= kTargetRun + kTargetStepCount &&
+                              (probe == kTargetRun + kTargetStepCount ||
+                               (probe - kTargetRun - kTargetStepCount) % 128 == 0));
         if (trace_budget_stage) {
             char status[200];
             std::snprintf(status, sizeof(status),

@@ -167,3 +167,21 @@ remains unchanged between the 3s and 10s probes. It does not forcibly kill
 a worker, patch active RX code, or switch CPU backend mid-run. We also log
 the JIT return reason on budget-stage traces. See
 `ios-app/IOS-JIT-RUNTIME-PLAN.md` for the staged architecture plan.
+
+## Build #26: targeted JIT single steps at run 80
+
+The Build #25 Ocarina test still stopped at full JIT run 80 (PC
+0x0041A4AC) after SVC 0x21/CreateAddressArbiter returned. The 3- and
+10-second checks both reported exactly 591 scheduler slices. The watchdog
+fired, but no subsequent full JIT return was logged. Its request was not
+separately acknowledged, so Build #26 adds both a frontend and a core
+acknowledgment reporting how many JITs were actively registered.
+
+Build #26 executes 1,024 *generated-code* single instruction steps at
+run 80 instead of the original 16,384-tick full Run. It logs CPU PC,
+CPSR, registers r0/r1/LR, tick downcount and halt reason before and
+after the first 24 steps and selected later checkpoints. After those
+steps, full Run resumes with a conservative 256-cycle cap. This isolates
+whether an individual instruction/backend call stalls or only the
+full-speed dispatcher path does. This is diagnostic-only, not playable
+performance. Stable master unchanged.

@@ -579,10 +579,18 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (void)requestJITHalt {
-    // Call only the optional C export while it is still in the loaded core.
-    // Dynarmic's halt request is cooperative, not a forced thread kill.
-    std::lock_guard<std::mutex> lock(_jitBridgeMutex);
-    if (_requestJITHalt) _requestJITHalt();
+    // Keep the dynamic library loaded throughout the optional C callback.
+    BOOL sent = NO;
+    {
+        std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+        if (_requestJITHalt) {
+            _requestJITHalt();
+            sent = YES;
+        }
+    }
+    [self reportJITStage:sent
+        ? @"JIT27TRACE frontend halt bridge invoked"
+        : @"JIT27TRACE frontend halt bridge unavailable (missing symbol)"];
 }
 
 - (void)stop {
