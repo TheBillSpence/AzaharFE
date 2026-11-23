@@ -79,3 +79,17 @@ guest PC, and timer downcount before/after stepping. This distinguishes a
 specific instruction/core failure from a problem in continuous execution.
 After step 512 it restores normal full-speed `jit->Run()` for comparison.
 The 512-step diagnostic is temporary, not a performance optimization.
+
+## Build #18: responsive iPhone UI and version badge
+
+The game view now uses a flexible screen-height constraint, so the live JIT
+status is kept above the two rows of on-screen buttons rather than competing
+with the image for fixed vertical space. Buttons scale their titles on
+narrower screens; long ROM titles omit the extension in navigation; the
+library instructions have a wrapping inset footer.
+
+A persistent, non-interactive bottom-left badge reads `v0.1.0 · build N`,
+using the actual bundle version. The GitHub Actions packaging workflow
+stamps `CFBundleVersion` from `GITHUB_RUN_NUMBER` automatically; this commit
+targets Build #18. Controls reserve the badge area above the iPhone safe
+bottom inset. The Build #17 512-step Dynarmic diagnostics remain intact.

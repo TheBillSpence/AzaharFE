@@ -54,6 +54,15 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
+      - name: Stamp build number for bottom-left version badge
+        run: |
+          set -euo pipefail
+          app="ios-app/.derived/Build/Products/Release-iphoneos/AzaharIOS.app"
+          test -f "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$app/Info.plist"
+          echo "Azahar iOS experimental build ${GITHUB_RUN_NUMBER}"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$app/Info.plist"
+
       - name: Patch LibreSSL syslog for iOS
         run: |
           set -euo pipefail

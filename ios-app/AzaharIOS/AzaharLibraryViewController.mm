@@ -49,17 +49,28 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = self.game.lastPathComponent;
+    // Keep long ROM filenames from competing with the navigation back button.
+    self.title = self.game.lastPathComponent.stringByDeletingPathExtension;
     self.view.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     self.screen = [UIImageView new];
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.backgroundColor = UIColor.blackColor;
+    self.screen.layer.cornerRadius = 10;
+    self.screen.clipsToBounds = YES;
     self.screen.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.screen setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                   forAxis:UILayoutConstraintAxisVertical];
     [self.view addSubview:self.screen];
 
-    self.status = MakeLabel(@"Starting Azahar...\nExperimental JIT test", 14);
+    self.status = MakeLabel(@"Starting Azahar...\nExperimental JIT test", 12);
+    self.status.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
+    self.status.textAlignment = NSTextAlignmentLeft;
+    self.status.numberOfLines = 3;
+    self.status.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.status setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                                  forAxis:UILayoutConstraintAxisVertical];
     [self.view addSubview:self.status];
 
     UIStackView *controls = [[UIStackView alloc] init];
@@ -92,6 +103,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
             button.tag = ids[row][col].integerValue;
             [button setTitle:labels[row][col] forState:UIControlStateNormal];
             button.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+            button.titleLabel.adjustsFontSizeToFitWidth = YES;
+            button.titleLabel.minimumScaleFactor = 0.72;
+            button.accessibilityLabel = labels[row][col];
             button.tintColor = UIColor.whiteColor;
             button.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
             button.layer.cornerRadius = 8;
@@ -106,18 +120,34 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+
+    // Prefer a generous screen but shrink it when the status or controls
+    // need more vertical room (e.g. accessibility text sizes, smaller phones).
+    NSLayoutConstraint *preferredScreenHeight =
+        [self.screen.heightAnchor constraintEqualToAnchor:safe.heightAnchor multiplier:0.58];
+    preferredScreenHeight.priority = UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *minimumScreenHeight =
+        [self.screen.heightAnchor constraintGreaterThanOrEqualToConstant:120];
+    minimumScreenHeight.priority = UILayoutPriorityDefaultLow;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.screen.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
         [self.screen.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
         [self.screen.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
-        [self.screen.heightAnchor constraintEqualToAnchor:safe.heightAnchor multiplier:0.62],
-        [self.status.topAnchor constraintEqualToAnchor:self.screen.bottomAnchor constant:8],
-        [self.status.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:12],
-        [self.status.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
-        [controls.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:6],
-        [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-6],
-        [controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-10],
-        [controls.heightAnchor constraintEqualToConstant:100]
+        [self.screen.heightAnchor constraintLessThanOrEqualToAnchor:safe.heightAnchor multiplier:0.58],
+        preferredScreenHeight,
+        minimumScreenHeight,
+
+        [self.status.topAnchor constraintEqualToAnchor:self.screen.bottomAnchor constant:10],
+        [self.status.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:14],
+        [self.status.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-14],
+        [self.status.bottomAnchor constraintLessThanOrEqualToAnchor:controls.topAnchor constant:-10],
+
+        [controls.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+        [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        // Reserve the bottom-left safe area for the persistent build badge.
+        [controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-30],
+        [controls.heightAnchor constraintEqualToConstant:96]
     ]];
 }
 
@@ -196,12 +226,24 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         target:self action:@selector(toggleJIT)];
     [self refreshJITButton];
 
-    UILabel *footer = MakeLabel(
+    // A wrapping footer prevents the instructions from clipping on
+    // narrower iPhones, and the last row stays clear of the build badge.
+    UIView *footer = [[UIView alloc] initWithFrame:
+        CGRectMake(0, 0, self.view.bounds.size.width, 176)];
+    UILabel *help = MakeLabel(
         @"Experimental frontend\nImport a decrypted, legally obtained 3DS game.\n"
         @"JIT ON requires StikDebug universal.js (otherwise it may crash).\n"
         @"Audio and touchscreen are not implemented.", 13);
-    footer.frame = CGRectMake(0, 0, self.view.bounds.size.width, 155);
+    help.textAlignment = NSTextAlignmentLeft;
+    [footer addSubview:help];
+    [NSLayoutConstraint activateConstraints:@[
+        [help.topAnchor constraintEqualToAnchor:footer.topAnchor constant:14],
+        [help.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:16],
+        [help.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-16],
+        [help.bottomAnchor constraintLessThanOrEqualToAnchor:footer.bottomAnchor constant:-8]
+    ]];
     self.tableView.tableFooterView = footer;
+    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 28, 0);
     [self refreshGames];
 }
 
