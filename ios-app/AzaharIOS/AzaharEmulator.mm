@@ -113,6 +113,17 @@ static __weak AzaharEmulator *sCurrentEmulator;
     NSString *_saveDirectory;
     NSString *_lastMessage;
 
+    // Experimental libretro Vulkan/MoltenVK bridge, deliberately optional.
+    struct retro_hw_render_callback _vkRenderCallback{};
+    const void *_vkNegotiation = nullptr;
+    void *_vkInterface = nullptr;
+    bool _vkRequested = false;
+    bool _vkReadbackErrorReported = false;
+    bool (*_vkStart)(const void *) = nullptr;
+    const void *(*_vkGetInterface)(void) = nullptr;
+    bool (*_vkReadback)(unsigned, unsigned, const void **, size_t *) = nullptr;
+    void (*_vkShutdown)(void) = nullptr;
+
     decltype(&retro_set_environment) _setEnvironment;
     decltype(&retro_set_video_refresh) _setVideoRefresh;
     decltype(&retro_set_audio_sample) _setAudioSample;
@@ -298,6 +309,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             options[key] = AZValue(key, url);
         }
         _gameOptions = [options copy];
+        _vkRenderCallback = {};
+        _vkNegotiation = nullptr;
+        _vkInterface = nullptr;
+        _vkRequested = false;
+        _vkReadbackErrorReported = false;
         _playSession = [NSObject new];
         _completedSlices.store(0);
         _waitingForFirstFrame.store(false);
@@ -410,6 +426,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
         if (_stopping.load()) return;
         _setEnvironment(AzaharEnvironment);
+        _vkStart = reinterpret_cast<bool (*)(const void *)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_start"));
+        _vkGetInterface = reinterpret_cast<const void *(*)(void)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_get_interface"));
+        _vkReadback = reinterpret_cast<bool (*)(unsigned, unsigned, const void **, size_t *)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_readback"));
+        _vkShutdown = reinterpret_cast<void (*)(void)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_shutdown"));
         {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _requestJITHalt = reinterpret_cast<void (*)(void)>(
@@ -431,6 +455,36 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         game.path = url.fileSystemRepresentation;
 
         BOOL loaded = _loadGame(&game);
+        if (loaded && _vkRequested) {
+            BOOL started = _vkStart && _vkGetInterface && _vkReadback && _vkShutdown &&
+                           _vkNegotiation && _vkRenderCallback.context_reset &&
+                           _vkStart(_vkNegotiation);
+            if (started) {
+                _vkInterface = const_cast<void *>(_vkGetInterface());
+                if (_vkInterface) {
+                    [self reportJITStage:@"JIT27TRACE MoltenVK device ready; initializing Vulkan PICA200"];
+                    _vkRenderCallback.context_reset();
+                } else {
+                    started = NO;
+                }
+            }
+            if (!started) {
+                // An unavailable GPU driver must never prevent games from
+                // working in the existing software rendering mode.
+                [self reportJITStage:@"JIT27TRACE MoltenVK initialization failed; retrying software renderer"];
+                _deinitCore();
+                if (_vkShutdown) _vkShutdown();
+                _vkInterface = nullptr;
+                _vkNegotiation = nullptr;
+                _vkRequested = false;
+                _vkRenderCallback = {};
+                NSMutableDictionary *fallback = [_gameOptions mutableCopy];
+                fallback[@"citra_graphics_api"] = @"Software";
+                _gameOptions = [fallback copy];
+                _initCore();
+                loaded = _loadGame(&game);
+            }
+        }
         [self reportJITStage:loaded ? @"6/7 Game loaded; starting first frame"
                                     : @"Game load failed"];
         if (!loaded) {
@@ -467,7 +521,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     firstFrame = false;
                     performanceWindow = now;
                     previousImages = _deliveredImages.load(std::memory_order_relaxed);
-                    [self reportJITStage:@"7/7 First software frame received; measuring FPS"];
+                    [self reportJITStage:@"7/7 First video frame received; measuring FPS"];
                 } else if (!firstFrame) {
                     ++emulatedFrames;
                     coreRunMilliseconds += coreRunMs;
@@ -506,6 +560,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         }
 
         _deinitCore();
+        if (_vkShutdown) {
+            _vkShutdown();
+            _vkInterface = nullptr;
+        }
     }
 }
 
@@ -544,6 +602,30 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
             if (!data) return NO;
             *(bool *)data = false;
+            return YES;
+        case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+            if (!data) return NO;
+            *(retro_hw_context_type *)data =
+                [_gameOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"]
+                    ? RETRO_HW_CONTEXT_VULKAN : RETRO_HW_CONTEXT_NONE;
+            return YES;
+        case RETRO_ENVIRONMENT_SET_HW_RENDER:
+            if (!data) return NO;
+            if (static_cast<retro_hw_render_callback *>(data)->context_type !=
+                RETRO_HW_CONTEXT_VULKAN) return NO;
+            if (![_gameOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"] ||
+                !_vkStart || !_vkReadback) return NO;
+            _vkRenderCallback = *static_cast<retro_hw_render_callback *>(data);
+            _vkRequested = true;
+            return YES;
+        case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
+            if (!data || !_vkRequested) return NO;
+            // LibRetro passes the static negotiation struct directly as data.
+            _vkNegotiation = data;
+            return YES;
+        case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
+            if (!data || !_vkInterface) return NO;
+            *static_cast<void **>(data) = _vkInterface;
             return YES;
         case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
             if (!data) return NO;
@@ -592,6 +674,19 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
+    if (data == RETRO_HW_FRAME_BUFFER_VALID && _vkReadback && _vkInterface) {
+        const void *gpuPixels = nullptr;
+        size_t gpuPitch = 0;
+        if (!_vkReadback(width, height, &gpuPixels, &gpuPitch)) {
+            if (!_vkReadbackErrorReported) {
+                _vkReadbackErrorReported = true;
+                [self reportJITStage:@"JIT27TRACE MoltenVK image readback failed; select Software graphics"];
+            }
+            return;
+        }
+        data = gpuPixels;
+        pitch = gpuPitch;
+    }
     if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || width == 0 || height == 0 ||
         width > 4096 || height > 4096 || pitch < width * 4 ||
         pitch > (4096 * 4) || _frameQueued.exchange(true)) return;
@@ -600,7 +695,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _receivedFirstVideo = YES;
         // A returned retro_run() alone does not prove a video buffer arrived.
         _waitingForFirstFrame.store(false);
-        [self reportJITStage:[NSString stringWithFormat:@"First software video buffer: %u x %u", width, height]];
+        [self reportJITStage:[NSString stringWithFormat:
+            @"First %@ video buffer: %u x %u", _vkInterface ? @"MoltenVK" : @"software", width, height]];
     }
     NSData *pixels = [NSData dataWithBytes:data length:pitch * height];
     dispatch_async(dispatch_get_main_queue(), ^{
