@@ -1,6 +1,12 @@
 name: AzaharFE ARM64 JIT Regression Harness
 on:
   workflow_dispatch:
+    inputs:
+      include_macos:
+        description: 'Also run native macOS ARM64 regression tests (slower runner queue)'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [ios-jit-experiment]
     paths:
@@ -9,15 +15,25 @@ on:
       - 'src/core/arm/dynarmic/**'
       - 'externals/dynarmic'
       - 'ios-app/patches/dynarmic-host-monitor.patch'
+# Keep only the most recent commit in the runner queue. Older attempts are
+# still available in Actions history, but do not consume scarce ARM64 runners.
+concurrency:
+  group: jit-harness-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   arm64-jit-tests:
     name: Run ARM64 JIT tests on ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # A single Linux ARM64 runner runs on every push, instead of waiting for
+      # the slower macOS queue. For a full dual-platform check, use Run workflow
+      # and select "Also run native macOS ARM64 regression tests".
       matrix:
-        runner: [macos-15, ubuntu-24.04-arm]
+        runner: ${{ fromJSON(inputs.include_macos && '["ubuntu-24.04-arm","macos-15"]' || '["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
