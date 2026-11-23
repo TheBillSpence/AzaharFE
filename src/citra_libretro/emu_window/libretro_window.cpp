@@ -255,7 +255,7 @@ LayoutGeometry ComputeLayoutGeometry() {
         baseX *= scaling;
         baseY *= scaling;
         break;
-    case Settings::LayoutOption::LargeScreen:
+    case Settings::LayoutOption::LargeScreen: {
         if (swapped) { // Bottom screen biggest
             baseX = Core::kScreenBottomWidth + Core::kScreenTopWidth / 4;
             baseY = Core::kScreenBottomHeight;
@@ -281,6 +281,7 @@ LayoutGeometry ComputeLayoutGeometry() {
             baseY *= scaling;
         }
         break;
+    }
     case Settings::LayoutOption::SideScreen:
         baseX = Core::kScreenBottomWidth + Core::kScreenTopWidth;
         baseY = Core::kScreenTopHeight;
