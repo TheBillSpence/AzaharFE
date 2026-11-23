@@ -63,6 +63,7 @@ public:
     }
     AzaharScopedJITRun(const AzaharScopedJITRun&) = delete;
     AzaharScopedJITRun& operator=(const AzaharScopedJITRun&) = delete;
+
 private:
     Dynarmic::A32::Jit* current;
 };
@@ -71,12 +72,13 @@ void AzaharRequestRunningJITToHalt() {
     {
         std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
         active = static_cast<unsigned>(gAzaharActiveJITs.size());
-        for (auto* running : gAzaharActiveJITs) running->HaltExecution();
+        for (auto* running : gAzaharActiveJITs)
+            running->HaltExecution();
     }
     // Report after releasing the lock (frontend callback acquires ObjC locks).
     char message[128];
-    std::snprintf(message, sizeof(message),
-                  "JIT27TRACE host halt request delivered active_jits=%u", active);
+    std::snprintf(message, sizeof(message), "JIT27TRACE host halt request delivered active_jits=%u",
+                  active);
     LibRetro::DisplayMessage(message);
 }
 #endif
@@ -268,8 +270,7 @@ public:
             // previous short runs returned successfully. Keep this per-thread
             // so other emulator threads cannot overwrite the active budget.
             const auto remaining = static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
-            const auto limited = remaining < gAzaharJITBudgetCap
-                                     ? remaining : gAzaharJITBudgetCap;
+            const auto limited = remaining < gAzaharJITBudgetCap ? remaining : gAzaharJITBudgetCap;
             if (remaining_tick_reports < 3) {
                 ++remaining_tick_reports;
                 char info[170];
@@ -334,14 +335,14 @@ void ARM_Dynarmic::Run() {
     // Limit logs so the iPhone's Documents file stays manageable.
     constexpr unsigned kStepProbeCount = 512;
     const unsigned probe = gAzaharJITRunCount.fetch_add(1, std::memory_order_relaxed);
-    const bool trace_probe = probe < 4 || probe == 15 || probe == 63 ||
-                             probe == 255 || probe == kStepProbeCount - 1;
+    const bool trace_probe =
+        probe < 4 || probe == 15 || probe == 63 || probe == 255 || probe == kStepProbeCount - 1;
     if (probe < kStepProbeCount) {
         if (trace_probe) {
             char status[192];
             std::snprintf(status, sizeof(status),
-                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld entered",
-                          probe + 1, kStepProbeCount, GetID(), jit->Regs()[15],
+                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld entered", probe + 1,
+                          kStepProbeCount, GetID(), jit->Regs()[15],
                           static_cast<long long>(GetTimer().GetDowncount()));
             LibRetro::DisplayMessage(status);
         }
@@ -349,8 +350,8 @@ void ARM_Dynarmic::Run() {
         if (trace_probe) {
             char status[192];
             std::snprintf(status, sizeof(status),
-                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld returned",
-                          probe + 1, kStepProbeCount, GetID(), jit->Regs()[15],
+                          "JIT27TRACE step %u/%u core=%u pc=0x%08x ticks=%lld returned", probe + 1,
+                          kStepProbeCount, GetID(), jit->Regs()[15],
                           static_cast<long long>(GetTimer().GetDowncount()));
             LibRetro::DisplayMessage(status);
         }
@@ -362,9 +363,8 @@ void ARM_Dynarmic::Run() {
     constexpr unsigned kTargetStepCount = 1024;
     if (probe >= kTargetRun && probe < kTargetRun + kTargetStepCount) {
         const unsigned n = probe - kTargetRun;
-        const bool trace = n < 24 || n == 31 || n == 63 || n == 127 ||
-                           n == 255 || n == 511 || n == 767 ||
-                           n == kTargetStepCount - 1;
+        const bool trace = n < 24 || n == 31 || n == 63 || n == 127 || n == 255 || n == 511 ||
+                           n == 767 || n == kTargetStepCount - 1;
         if (n == 0) {
             LibRetro::DisplayMessage(
                 "JIT27TRACE run80 targeted single-step probe started; 1024 instructions");
@@ -372,10 +372,10 @@ void ARM_Dynarmic::Run() {
         if (trace) {
             char message[256];
             std::snprintf(message, sizeof(message),
-                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x r1=0x%08x lr=0x%08x ticks=%lld entered",
-                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(),
-                          GetReg(0), GetReg(1), GetReg(14),
-                          static_cast<long long>(GetTimer().GetDowncount()));
+                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x "
+                          "r1=0x%08x lr=0x%08x ticks=%lld entered",
+                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(), GetReg(0),
+                          GetReg(1), GetReg(14), static_cast<long long>(GetTimer().GetDowncount()));
             LibRetro::DisplayMessage(message);
         }
         AzaharScopedJITRun active_step{jit};
@@ -383,10 +383,10 @@ void ARM_Dynarmic::Run() {
         if (trace) {
             char message[256];
             std::snprintf(message, sizeof(message),
-                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x r1=0x%08x lr=0x%08x ticks=%lld returned reason=0x%x",
-                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(),
-                          GetReg(0), GetReg(1), GetReg(14),
-                          static_cast<long long>(GetTimer().GetDowncount()),
+                          "JIT27TRACE run80 step=%u/%u core=%u pc=0x%08x cpsr=0x%08x r0=0x%08x "
+                          "r1=0x%08x lr=0x%08x ticks=%lld returned reason=0x%x",
+                          n + 1, kTargetStepCount, GetID(), GetPC(), GetCPSR(), GetReg(0),
+                          GetReg(1), GetReg(14), static_cast<long long>(GetTimer().GetDowncount()),
                           static_cast<unsigned>(reason));
             LibRetro::DisplayMessage(message);
         }
@@ -401,15 +401,13 @@ void ARM_Dynarmic::Run() {
         // Run 16 full JIT slices at each tested budget. If a later budget
         // freezes, the last "entered" trace identifies the failing stage.
         // This is NOT a final FPS optimization: full ~375k ticks stays off.
-        constexpr std::uint64_t kBudgets[] =
-            {64, 256, 1024, 4096, 16384, 65536, 262144};
+        constexpr std::uint64_t kBudgets[] = {64, 256, 1024, 4096, 16384, 65536, 262144};
         constexpr unsigned kRunsPerStage = 16;
         const unsigned run_index = probe - kStepProbeCount;
         const unsigned stage_number = run_index / kRunsPerStage;
         constexpr unsigned kLastStage = sizeof(kBudgets) / sizeof(kBudgets[0]) - 1;
         const unsigned stage = stage_number > kLastStage ? kLastStage : stage_number;
-        gAzaharJITBudgetCap = probe >= kTargetRun + kTargetStepCount
-                                  ? 256 : kBudgets[stage];
+        gAzaharJITBudgetCap = probe >= kTargetRun + kTargetStepCount ? 256 : kBudgets[stage];
         if (probe == kStepProbeCount) {
             gAzaharJITFullRunStarted.store(true, std::memory_order_release);
         }
@@ -423,7 +421,8 @@ void ARM_Dynarmic::Run() {
         if (trace_budget_stage) {
             char status[200];
             std::snprintf(status, sizeof(status),
-                          "JIT27TRACE stage=%u run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x budget=%llu entered",
+                          "JIT27TRACE stage=%u run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x "
+                          "budget=%llu entered",
                           stage + 1, run_index + 1, GetID(), GetPC(), GetReg(0), GetReg(1),
                           static_cast<unsigned long long>(gAzaharJITBudgetCap));
             LibRetro::DisplayMessage(status);
@@ -442,10 +441,11 @@ void ARM_Dynarmic::Run() {
     }
     if (trace_budget_stage) {
         char status[200];
-        std::snprintf(status, sizeof(status),
-                      "JIT27TRACE run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x returned reason=0x%x",
-                      probe - kStepProbeCount + 1, GetID(), GetPC(), GetReg(0), GetReg(1),
-                       static_cast<unsigned>(jit_halt_reason));
+        std::snprintf(
+            status, sizeof(status),
+            "JIT27TRACE run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x returned reason=0x%x",
+            probe - kStepProbeCount + 1, GetID(), GetPC(), GetReg(0), GetReg(1),
+            static_cast<unsigned>(jit_halt_reason));
         LibRetro::DisplayMessage(status);
     }
 #endif
@@ -631,10 +631,9 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Disable direct block linking, return-stack prediction and fast dispatch
     // temporarily to force execution through the dispatcher, which checks the
     // cycle budget. Keep other safe IR optimizations and cycle counting on.
-    config.optimizations = config.optimizations &
-        ~(Dynarmic::OptimizationFlag::BlockLinking |
-          Dynarmic::OptimizationFlag::ReturnStackBuffer |
-          Dynarmic::OptimizationFlag::FastDispatch);
+    config.optimizations = config.optimizations & ~(Dynarmic::OptimizationFlag::BlockLinking |
+                                                    Dynarmic::OptimizationFlag::ReturnStackBuffer |
+                                                    Dynarmic::OptimizationFlag::FastDispatch);
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct
     // memory accesses from the rest of the iOS JIT. Loads and stores then use

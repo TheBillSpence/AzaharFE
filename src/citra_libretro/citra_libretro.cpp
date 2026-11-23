@@ -298,8 +298,7 @@ void retro_run() {
     // Instrument only the first JIT frame. A black screen can mean either
     // a JIT execution stall or many RunLoop slices without a video frame.
 #ifdef IOS
-    const bool trace_jit_first_frame =
-        emu_instance->first_run_loop && LibRetro::CanUseJIT();
+    const bool trace_jit_first_frame = emu_instance->first_run_loop && LibRetro::CanUseJIT();
     if (trace_jit_first_frame) {
         LibRetro::DisplayMessage("JIT27TRACE entered retro_run");
     }
