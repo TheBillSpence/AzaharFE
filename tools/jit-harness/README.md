@@ -18,6 +18,8 @@ LiveContainer, StikDebug, a 3DS GPU or commercial ROM data.
 | exclusive | An ARM exclusive load/store succeeds, fails after another processor wins the reservation, and succeeds again during Run |
 | svc_chain | Three SVC 0x21 halt/resume cycles in one synthetic ARM32 program |
 | invalidate_stress | Patch and invalidate the same guest instruction 32 times to catch stale code |
+| opt_linked | Tests the block-linking speed preset on active ARM32 loops, verifying state and Run/Step budgets |
+| opt_fast | Tests restored upstream dispatch optimizations with the same correctness checks |
 
 The interpreter deliberately supports **only** this fixture. The longer parity
 case keeps the loop active for all 2,048 instructions. These tests use
@@ -40,3 +42,17 @@ exits and hangs are terminated after a per-case timeout.
 The iPhone trace entered an ARM LDREX and stopped before its return.
 The exclusive test uses synthetic instructions and memory to exercise this
 path. Rendering the first game frame still requires a device test.
+
+## Optional iPhone JIT speed presets
+
+Under Settings > JIT performance mode, choose:
+- **Compatibility (current)**: the proven iPhone JIT settings, and the default.
+- **Linked blocks (test)**: restores block linking, while leaving fast dispatch and
+  return-stack prediction disabled.
+- **Fast dispatch (test)**: restores all three upstream dispatch optimizations.
+
+This setting is captured on game launch; restart a game to apply it. If a
+mode stalls or crashes, reopen the game in Compatibility. Benchmark with the
+same game scene and graphics settings; measure both emulated FPS and delivered
+images/s in diagnostics. Host ARM64 tests cannot prove iOS TXM compatibility
+or guarantee any performance benefit.

@@ -12,6 +12,7 @@
 #include <vector>
 #include "citra_libretro/environment.h"
 #include "core/arm/dynarmic/ios_jit_budget.h"
+#include "core/arm/dynarmic/ios_jit_optimizations.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/optimization_flags.h>
@@ -642,14 +643,19 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Disable direct block linking, return-stack prediction and fast dispatch
     // temporarily to force execution through the dispatcher, which checks the
     // cycle budget. Keep other safe IR optimizations and cycle counting on.
-    config.optimizations = config.optimizations & ~(Dynarmic::OptimizationFlag::BlockLinking |
-                                                    Dynarmic::OptimizationFlag::ReturnStackBuffer |
-                                                    Dynarmic::OptimizationFlag::FastDispatch);
+    // Opt-in speed presets are selected per game at launch; compatibility stays
+    // the default so known-good iPhone JIT execution remains available.
+    const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "safe");
+    config.optimizations = SelectIOSJitOptimizations(config.optimizations, jit_mode);
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct
     // memory accesses from the rest of the iOS JIT. Loads and stores then use
     // the existing MemorySystem callbacks, including exclusive accesses.
-    LibRetro::DisplayMessage("JIT27TRACE guest memory callbacks; block linking OFF");
+    char optimization_status[128];
+    std::snprintf(optimization_status, sizeof(optimization_status),
+                  "JIT27TRACE JIT optimization mode=%s; guest memory callbacks",
+                  jit_mode.c_str());
+    LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {
         config.page_table = &current_page_table->GetPointerArray();

@@ -146,7 +146,9 @@
     }
     NSString *key=AZOptionKeys()[ip.row]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." : nil preferredStyle:UIAlertControllerStyleActionSheet];
+        message:[key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
+                ([key isEqual:@"AzaharJITSpeed"] ? @"Compatibility keeps the proven JIT settings. Experimental speed modes may freeze. Relaunch the game to apply." : nil)
+        preferredStyle:UIAlertControllerStyleActionSheet];
     if (url) [menu addAction:[UIAlertAction actionWithTitle:@"Use universal setting" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         AZSetValue(key,nil,url); [tableView reloadData];
     }]];

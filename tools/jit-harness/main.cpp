@@ -15,6 +15,7 @@
 #include <dynarmic/interface/exclusive_monitor.h>
 #include <dynarmic/interface/optimization_flags.h>
 #include "../../src/core/arm/dynarmic/ios_jit_budget.h"
+#include "../../src/core/arm/dynarmic/ios_jit_optimizations.h"
 
 namespace {
 using u8 = std::uint8_t;
@@ -394,6 +395,37 @@ void TestStepRunTransition() {
     }
 }
 
+
+void TestOptimizationMode(const std::string& mode) {
+    Require(mode == "linked" || mode == "fast", "unknown speed preset");
+    Environment env;
+    WriteActiveLoop(env.memory);
+    ReferenceCPU reference;
+    reference.memory = env.memory;
+    reference.Init();
+
+    auto config = ConservativeConfig(env);
+    config.optimizations = Core::SelectIOSJitOptimizations(
+        Dynarmic::A32::UserConfig{}.optimizations, mode);
+    Dynarmic::A32::Jit cpu(config);
+    InitCPU(cpu);
+
+    // One process per mode. CI timeout catches a non-returning JIT dispatch.
+    for (u64 budget : {u64{1}, u64{65}, u64{256}, u64{1024}, u64{4096},
+                       u64{16384}}) {
+        RunActiveBudget(cpu, env, reference, budget);
+    }
+    for (unsigned i = 0; i < 16; ++i) {
+        env.ticks_left = 1;
+        cpu.Step();
+        reference.Step();
+        CheckParity(cpu, env, reference, "opt-" + mode + " step " + std::to_string(i));
+    }
+    Require(!env.unexpected_exception && !env.memory.out_of_bounds,
+            "unexpected fault in speed preset " + mode);
+    std::cout << "PASS " << mode << " optimized Run/Step state and budgets\n";
+}
+
 void TestExclusive() {
     Environment env;
     Dynarmic::ExclusiveMonitor monitor(2);
@@ -499,7 +531,7 @@ int main(int argc, char** argv) {
 #if !defined(__aarch64__) && !defined(__arm64__)
         throw std::runtime_error("This harness MUST execute on native ARM64");
 #endif
-        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive");
+        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive|opt_linked|opt_fast");
         const std::string name{argv[1]};
         if (name == "parity") TestParity();
         else if (name == "budget") TestBudget();
@@ -511,6 +543,8 @@ int main(int argc, char** argv) {
         else if (name == "svc_chain") TestSVCChain();
         else if (name == "invalidate_stress") TestInvalidateStress();
         else if (name == "exclusive") TestExclusive();
+        else if (name == "opt_linked") TestOptimizationMode("linked");
+        else if (name == "opt_fast") TestOptimizationMode("fast");
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
