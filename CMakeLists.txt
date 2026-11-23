@@ -458,7 +458,9 @@ if (APPLE)
     find_library(IOSURFACE_LIBRARY IOSurface REQUIRED)
     set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${AVFOUNDATION_LIBRARY} ${IOSURFACE_LIBRARY})
 
-    if (ENABLE_VULKAN AND NOT ENABLE_LIBRETRO)
+    if (ENABLE_VULKAN AND (NOT ENABLE_LIBRETRO OR IOS))
+        # Native iPhone libretro embeds MoltenVK in the core dylib. Desktop
+        # libretro frontends still supply their own Vulkan runtime.
         if (USE_SYSTEM_MOLTENVK)
             find_library(MOLTENVK_LIBRARY MoltenVK REQUIRED)
         else()
@@ -473,6 +475,10 @@ if (APPLE)
 
         message(STATUS "Using MoltenVK at ${MOLTENVK_LIBRARY}.")
         set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${MOLTENVK_LIBRARY})
+        if (IOS)
+            list(APPEND PLATFORM_LIBRARIES "-framework Metal" "-framework QuartzCore"
+                 "-framework CoreGraphics" "-framework CoreVideo")
+        endif()
     endif()
 elseif (WIN32)
     set(PLATFORM_LIBRARIES winmm ws2_32)

@@ -145,7 +145,7 @@ jobs:
             -DENABLE_QT=OFF \
             -DENABLE_SDL2=OFF \
             -DENABLE_OPENGL=OFF \
-            -DENABLE_VULKAN=OFF \
+            -DENABLE_VULKAN=ON \
             -DENABLE_SOFTWARE_RENDERER=ON \
             -DENABLE_LTO=ON \
             -DENABLE_OPT=OFF \

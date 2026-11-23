@@ -150,7 +150,8 @@
                 ([key isEqual:@"AzaharJITSpeed"] ? @"Fast Dispatch is the default. Turbo skips historical startup probes and uses a larger code cache; Direct RAM also enables fast page-table memory access. Both are experimental and may freeze or corrupt guest state. Relaunch to apply." :
                  ([key isEqual:@"AzaharDeepProfile"] ? @"Opt in to 5-second timing reports for CPU, JIT, HLE, PICA, software rasterization, and audio, plus a one-time CPU-only JIT benchmark. Profiling itself costs CPU time. Restart to apply." :
                  ([key isEqual:@"AzaharSoftwareThreads"] ? @"Choose the number of software PICA graphics worker threads. Automatic uses the current device behavior; compare the same scene to choose. Restart to apply." :
-                 ([key isEqual:@"citra_resolution_factor"] ? @"1× is native 3DS resolution. With software graphics, 2×–4× upscale the image rather than rendering extra 3D detail. Higher settings cost memory and performance. Relaunch the game to apply." : nil))))
+                 ([key isEqual:@"citra_graphics_api"] ? @"Vulkan uses MoltenVK to accelerate PICA200 3D rendering on the iPhone GPU. Highly experimental: it can fail to launch or render incorrectly. Software is always available as a safe fallback. Relaunch to apply." :
+                 ([key isEqual:@"citra_resolution_factor"] ? @"1× is native 3DS resolution. With software graphics, 2×–4× upscale the image rather than rendering extra 3D detail. Higher settings cost memory and performance. Relaunch the game to apply." : nil)))))
         preferredStyle:UIAlertControllerStyleActionSheet];
     if (url) [menu addAction:[UIAlertAction actionWithTitle:@"Use universal setting" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         AZSetValue(key,nil,url); [tableView reloadData];

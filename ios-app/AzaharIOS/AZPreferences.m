@@ -10,13 +10,14 @@ UIColor *AZYellow(void) { return [UIColor colorWithRed:1 green:0.84 blue:0.27 al
 
 NSArray<NSString *> *AZOptionKeys(void) {
     return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile",
-             @"AzaharSoftwareThreads", @"citra_resolution_factor",
+             @"AzaharSoftwareThreads", @"citra_graphics_api", @"citra_resolution_factor",
              @"citra_layout_option", @"citra_swap_screen"];
 }
 NSString *AZOptionTitle(NSString *key) {
     return @{@"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
              @"AzaharDeepProfile":@"Detailed CPU/GPU profiling",
              @"AzaharSoftwareThreads":@"Software graphics threads",
+             @"citra_graphics_api":@"Graphics API",
              @"citra_resolution_factor":@"Output resolution",
              @"citra_layout_option":@"Screen layout",
              @"citra_swap_screen":@"Primary screen"}[key];
@@ -28,6 +29,8 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"turbo", @"direct", @"linked", @"safe"];
     if ([key isEqual:@"AzaharDeepProfile"]) return @[@"off", @"on"];
     if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"2", @"4", @"6"];
+    // Safe default, per-game overrides require explicit experimental opt-in.
+    if ([key isEqual:@"citra_graphics_api"]) return @[@"Software", @"Vulkan"];
     if ([key isEqual:@"citra_resolution_factor"]) return @[@"1", @"2", @"3", @"4"];
     if ([key isEqual:@"citra_layout_option"]) return @[@"default", @"single_screen", @"large_screen", @"side_by_side"];
     return @[@"Top", @"Bottom"];
@@ -37,7 +40,8 @@ NSString *AZChoiceTitle(NSString *v) {
              @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
              @"fast":@"Fast dispatch (default)", @"turbo":@"Turbo JIT (experimental)",
              @"direct":@"Turbo + Direct RAM (high risk)",
-             @"auto":@"Automatic",
+             @"auto":@"Automatic", @"Software":@"Software (safe default)",
+             @"Vulkan":@"Vulkan via MoltenVK (experimental)",
              @"1":@"1× Native (400×240)", @"2":@"2× (800×480)",
              @"3":@"3× (1200×720)", @"4":@"4× (1600×960)",
              @"default":@"Top and bottom", @"single_screen":@"Single screen",

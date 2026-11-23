@@ -82,6 +82,11 @@ bool GetMicrophoneInterface(struct retro_microphone_interface* mic_interface) {
 }
 
 Settings::GraphicsAPI GetPreferredRenderer() {
+#ifdef IOS
+    // Never silently switch an existing iPhone game to the experimental
+    // Vulkan backend merely because it was compiled into the core.
+    return Settings::GraphicsAPI::Software;
+#endif
     // On Android, we really want to default to Vulkan if we can, so we'll ignore the frontend's
     // recommendation if possible...
 #if defined(ANDROID) && defined(ENABLE_VULKAN)

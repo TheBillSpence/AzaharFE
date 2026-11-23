@@ -84,6 +84,12 @@ if(MINGW)
   target_link_libraries(citra_libretro PRIVATE crypt32)
 endif()
 
+if(IOS AND ENABLE_VULKAN)
+  # Offscreen Vulkan/MoltenVK bridge: core owns its device and returns a
+  # host-visible output frame to the existing iOS UIImage frontend.
+  target_sources(citra_libretro PRIVATE ios_moltenvk_bridge.cpp ios_moltenvk_bridge.h)
+endif()
+
 if(IOS)
   target_compile_definitions(citra_libretro_common PRIVATE IOS)
   target_compile_definitions(citra_libretro PRIVATE IOS)
@@ -100,6 +106,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/libretro.osx.def"
                    "${LIBRETRO_EXPORTS_FILE}" COPYONLY)
     file(APPEND "${LIBRETRO_EXPORTS_FILE}" "_azahar_jit_request_halt\n")
+    if(ENABLE_VULKAN)
+      file(APPEND "${LIBRETRO_EXPORTS_FILE}"
+          "_azahar_ios_vk_start\n_azahar_ios_vk_get_interface\n"
+          "_azahar_ios_vk_readback\n_azahar_ios_vk_shutdown\n")
+    endif()
   endif()
   target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${LIBRETRO_EXPORTS_FILE}")
 else()
