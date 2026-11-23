@@ -557,6 +557,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     NSString *text = [NSString stringWithUTF8String:message->msg];
                     if ([text hasPrefix:@"JIT27TRACE "]) {
                         [self reportJITStage:text];
+                    } else if ([text hasPrefix:@"PERF27 "]) {
+                        // PERF27 is diagnostic output, not a JIT state change.
+                        // Persist it alongside JIT27TRACE so Settings -> Log Data
+                        // contains the on-device CPU/GPU/HLE profiler reports.
+                        [self writeDiagnostic:text];
                     } else if (text) {
                         @synchronized (self) { _lastMessage = text; }
                     }
