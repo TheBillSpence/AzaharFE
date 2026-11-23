@@ -36,6 +36,12 @@ constexpr u32 SIGTRAP = 5;
 
 namespace Core {
 
+#ifdef IOS
+// Start tracing timer callbacks only when the first full guest JIT run begins.
+// Single-step uses a separate code path and isn't representative here.
+static std::atomic<bool> gAzaharJITFullRunStarted{false};
+#endif
+
 class DynarmicUserCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
     explicit DynarmicUserCallbacks(ARM_Dynarmic& parent)
@@ -167,10 +173,43 @@ public:
 
     void AddTicks(std::uint64_t ticks) override {
         parent.GetTimer().AddTicks(ticks);
+#ifdef IOS
+        if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
+            static std::atomic<unsigned> trace_count{0};
+            if (trace_count.fetch_add(1, std::memory_order_relaxed) < 3) {
+                char info[160];
+                std::snprintf(info, sizeof(info),
+                              "JIT27TRACE AddTicks(%llu) core=%u remaining=%lld",
+                              static_cast<unsigned long long>(ticks), parent.GetID(),
+                              static_cast<long long>(parent.GetTimer().GetDowncount()));
+                LibRetro::DisplayMessage(info);
+            }
+        }
+#endif
     }
     std::uint64_t GetTicksRemaining() override {
-        s64 ticks = parent.GetTimer().GetDowncount();
-        return static_cast<u64>(ticks <= 0 ? 0 : ticks);
+        const s64 ticks = parent.GetTimer().GetDowncount();
+#ifdef IOS
+        if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
+            // Diagnostic limit: the full run entered with ~375k cycles.
+            // Test whether a 64-cycle guest slice can reach the generated
+            // return-to-host path on the A13 / iOS 27.2.1.
+            constexpr std::uint64_t kJITTestSlice = 64;
+            const auto remaining = static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
+            const auto limited = remaining < kJITTestSlice ? remaining : kJITTestSlice;
+            static std::atomic<unsigned> trace_count{0};
+            if (trace_count.fetch_add(1, std::memory_order_relaxed) < 3) {
+                char info[170];
+                std::snprintf(info, sizeof(info),
+                              "JIT27TRACE GetTicksRemaining core=%u original=%lld capped=%llu",
+                              parent.GetID(), static_cast<long long>(ticks),
+                              static_cast<unsigned long long>(limited));
+                LibRetro::DisplayMessage(info);
+            }
+            return limited;
+        }
+#endif
+        return static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
     }
     std::uint64_t GetTicksForCode(bool is_thumb, VAddr, std::uint32_t instruction) override {
         return Core::TicksForInstruction(is_thumb, instruction);
@@ -239,6 +278,7 @@ void ARM_Dynarmic::Run() {
                       GetID(), jit->Regs()[15],
                       static_cast<long long>(GetTimer().GetDowncount()));
         LibRetro::DisplayMessage(status);
+        gAzaharJITFullRunStarted.store(true, std::memory_order_release);
     }
 #endif
     jit->Run();

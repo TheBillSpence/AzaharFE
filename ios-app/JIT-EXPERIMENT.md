@@ -115,3 +115,23 @@ The Build #18 responsive game UI, persistent version label, 512-step
 probe, and stable master branch remain unchanged. The expected outcome
 is the first `Dynarmic::Run returned` trace, or more detail proving
 that direct linking was not the cause.
+
+## Build #20: bounded full-JIT execution and timer callback trace
+
+On Build #19, all 512 JIT single-steps succeeded and the first
+full `Dynarmic::Run` still failed to return even with BlockLinking,
+ReturnStackBuffer and FastDispatch disabled.
+
+This diagnostic build temporarily limits the cycle budget reported by
+`DynarmicUserCallbacks::GetTicksRemaining()` to 64 guest ticks, starting
+at the first full `Run` invocation. It also logs the first three
+`GetTicksRemaining` and `AddTicks` callback calls. If the first full
+run now returns, the issue likely depends on large JIT slices or the
+full-speed dispatch behavior over many cycles. If the timer callback is
+entered but it still fails, the issue is deeper in the generated loop
+or return path. If it is never called, the full-run entry prelude is
+suspect. This 64-tick cap is a DIAGNOSTIC, not a production setting;
+it will slow emulation and should be removed when the issue is solved.
+
+Keep testing with StikDebug universal.js on iOS 27.2.1. The Build #18
+adaptive UI and the persistent build counter remain unchanged.
