@@ -1,0 +1,44 @@
+name: AzaharFE MoltenVK Bridge Fast Compile
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-jit-experiment]
+    paths:
+      - 'src/citra_libretro/ios_moltenvk_bridge.*'
+      - '.github/workflows/ios-vulkan-bridge-check.yml'
+
+concurrency:
+  group: ios-moltenvk-bridge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-syntax:
+    name: Check Vulkan bridge C++ interface (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch only Vulkan and libretro headers
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 externals/vulkan-headers externals/libretro-common
+      - name: Validate bridge with native Clang
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -DIOS=1 -DENABLE_VULKAN=1 -fsyntax-only \
+            -Isrc \
+            -Iexternals/vulkan-headers/include \
+            -Iexternals/libretro-common/libretro-common/include \
+            src/citra_libretro/ios_moltenvk_bridge.cpp
+      - name: Check declared entry points
+        run: |
+          set -euo pipefail
+          for symbol in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_shutdown; do
+            grep -q "$symbol" src/citra_libretro/ios_moltenvk_bridge.h
+            grep -q "$symbol" src/citra_libretro/ios_moltenvk_bridge.cpp
+          done
