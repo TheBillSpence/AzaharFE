@@ -119,6 +119,24 @@ source = replace(
     "    std::size_t m_size = 0;",
     "writable mapping storage",
 )
+# The JIT code is written through the RW mapping and executed through RX.
+# Flushing only the RX pointer can leave newly emitted instructions stale in
+# the D-cache of the RW alias on iOS. Sync both mappings, as in our successful
+# 16 KiB ARM64 test (returned 42 on iOS 27.2.1 / A13).
+source = replace(
+    source,
+    "#if defined(__APPLE__)\\n        sys_icache_invalidate(mem, size);",
+    """#if defined(__APPLE__) && TARGET_OS_IPHONE
+        const auto offset = reinterpret_cast<std::uintptr_t>(mem) -
+                            reinterpret_cast<std::uintptr_t>(m_memory);
+        auto* writable = reinterpret_cast<void*>(
+            reinterpret_cast<std::uintptr_t>(m_writable_memory) + offset);
+        sys_icache_invalidate(writable, size);
+        sys_icache_invalidate(mem, size);
+#elif defined(__APPLE__)
+        sys_icache_invalidate(mem, size);""",
+    "invalidate RW and RX aliases",
+)
 oaknut.write_text(source)
 
 dynarmic = Path("externals/dynarmic/src/dynarmic/backend/arm64/address_space.cpp")

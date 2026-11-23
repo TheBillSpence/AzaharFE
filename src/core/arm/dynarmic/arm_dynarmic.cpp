@@ -201,16 +201,25 @@ void ARM_Dynarmic::Run() {
     }
 
 #ifdef IOS
-    static std::atomic<bool> log_first_run{true};
-    const bool trace_first_run = log_first_run.exchange(false);
-    if (trace_first_run) {
-        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Run entered");
+    // On the very first execution, step exactly one 3DS instruction via
+    // Dynarmic's generated-code path to distinguish an immediate JIT fault
+    // from a full-slice loop that never yields. This is diagnostic only.
+    static std::atomic<unsigned> run_probe_count{0};
+    const unsigned probe = run_probe_count.fetch_add(1, std::memory_order_relaxed);
+    if (probe == 0) {
+        LibRetro::DisplayMessage("JIT27TRACE first Dynarmic::Step (via Run) entered");
+        jit->Step();
+        LibRetro::DisplayMessage("JIT27TRACE first Dynarmic::Step (via Run) returned");
+        return;
+    }
+    if (probe == 1) {
+        LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run entered");
     }
 #endif
     jit->Run();
 #ifdef IOS
-    if (trace_first_run) {
-        LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Run returned");
+    if (probe == 1) {
+        LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run returned");
     }
 #endif
 }
@@ -388,9 +397,9 @@ void ARM_Dynarmic::ServeBreak([[maybe_unused]] int signal) {
 std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     Dynarmic::A32::UserConfig config;
 #ifdef IOS
-    // Limit per-cache debugger preparation on iOS 27: 4 MiB = 256 pages.
-    // Dynarmic automatically clears/recycles its cache when nearly full.
-    config.code_cache_size = 4 * 1024 * 1024;
+    // 4 MiB was below Dynarmic's documented ~8 MiB minimum.
+    // 16 MiB per code cache balances A13 RAM and room for generated code.
+    config.code_cache_size = 16 * 1024 * 1024;
 #endif
     config.callbacks = cb.get();
     if (current_page_table) {

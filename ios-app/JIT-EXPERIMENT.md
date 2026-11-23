@@ -11,8 +11,8 @@ This experimental build requests executable code-cache memory through
 StikDebug universal.js: BRK #0xf00d, x16=1, x0=null, x1=region size.
 It creates RW aliases through vm_remap and vm_protect and makes Dynarmic
 write emitted ARM64 code to the RW alias while executing the RX one.
-Each iOS Dynarmic code cache is now capped at 4 MiB to reduce how many
-16 KiB pages the debugger needs to prepare at once.
+The code cache is 16 MiB per CPU (Dynarmic documents ~8 MiB as minimum).
+The earlier 4 MiB size was below its recommended minimum.
 The frontend first preflights the same protocol with a 16 KiB region.
 
 Important: universal.js MUST be assigned before turning JIT ON. If
@@ -53,3 +53,15 @@ Events beginning `JIT27TRACE` are stored in the same Documents diagnostic
 file as the seven frontend startup stages. If it hangs again, export the
 last 10 lines of `AzaharJITDiagnostics.txt` for diagnosis. No automatic
 switch to interpreter occurs while Dynarmic may already be executing.
+
+## Build after #14: first Dynarmic instruction
+
+On an iPhone 11 Pro Max (A13) running iOS 27.2.1, the Build #14 ARM64
+JIT memory test successfully executed `mov x0, #42; ret`, returning 42.
+Azahar created all five Dynarmic JIT caches but hung after the first
+`Dynarmic::Run entered` trace. To distinguish invalid generated code from
+a full-slice loop, the first `Run()` now calls Dynarmic's `Step()`
+for exactly one guest instruction, reports whether it returned, then
+allows normal full-slice runs. Oaknut now invalidates both the writable
+and executable aliases after code emission and link patching. This
+build has not yet been tested on device.
