@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   ios-frontend:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 120
 
     steps:
@@ -228,6 +228,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
