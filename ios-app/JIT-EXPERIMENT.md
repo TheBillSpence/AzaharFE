@@ -185,3 +185,21 @@ steps, full Run resumes with a conservative 256-cycle cap. This isolates
 whether an individual instruction/backend call stalls or only the
 full-speed dispatcher path does. This is diagnostic-only, not playable
 performance. Stable master unchanged.
+
+## Post-Build #26 device log: narrow step-33-to-64 window and missing halt export
+
+The next iPhone test confirms the ARM64 RX preflight returned 42, the first
+512 JIT steps and full JIT runs 1-79 returned, and run 80's targeted steps
+1-32 all returned. Step 32 ended at ARM32 PC 0x003019D4. The scheduler
+stopped at 626 completed slices, with no step-64 checkpoint and no video
+frame. The exact non-returning step is still unknown; trace steps 33-64
+individually before changing JIT dispatch code.
+
+The watchdog explicitly logged `frontend halt bridge unavailable (missing symbol)`.
+The source defines `azahar_jit_request_halt`, but the macOS/iOS libretro
+linker applies an allowlist in `libretro.osx.def` that lacks the symbol.
+Generate an iOS-only extension of the export list at CMake configure time,
+keeping regular macOS builds unaffected. The IPA workflow now inspects the
+built dylib with `nm -gU` and fails CI if the export is absent. This
+repairs the frontend dlsym contract but does not establish that cooperative
+HaltExecution can interrupt the JIT's currently frozen instruction.

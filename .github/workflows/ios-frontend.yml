@@ -255,6 +255,17 @@ jobs:
           cmake --build build-ios-libretro \
             --target citra_libretro --parallel 3
 
+      - name: Verify JIT halt bridge is exported from the iOS core
+        run: |
+          set -euo pipefail
+          dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
+          test -n "$dylib"
+          if ! xcrun nm -gU "$dylib" | grep -E '(^|[[:space:]])_azahar_jit_request_halt$'; then
+            echo "::error::JIT halt bridge symbol is not exported by $dylib"
+            exit 1
+          fi
+          echo "Verified JIT halt bridge export in $dylib"
+
       - name: Bundle the software core and package unsigned IPA
         run: |
           set -euo pipefail

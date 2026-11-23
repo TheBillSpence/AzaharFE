@@ -363,8 +363,10 @@ void ARM_Dynarmic::Run() {
     constexpr unsigned kTargetStepCount = 1024;
     if (probe >= kTargetRun && probe < kTargetRun + kTargetStepCount) {
         const unsigned n = probe - kTargetRun;
-        const bool trace = n < 24 || n == 31 || n == 63 || n == 127 || n == 255 || n == 511 ||
-                           n == 767 || n == kTargetStepCount - 1;
+        // Step 32 returned, but step 64 was not reached on the iPhone.
+        // Emit entry/exit around every instruction in that narrowed range.
+        const bool trace = n < 64 || n == 127 || n == 255 || n == 511 || n == 767 ||
+                           n == kTargetStepCount - 1;
         if (n == 0) {
             LibRetro::DisplayMessage(
                 "JIT27TRACE run80 targeted single-step probe started; 1024 instructions");

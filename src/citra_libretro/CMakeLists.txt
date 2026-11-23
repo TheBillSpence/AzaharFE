@@ -93,7 +93,15 @@ endif()
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
     CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
     CMAKE_SYSTEM_NAME STREQUAL "tvOS")
-  target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/libretro.osx.def")
+  # Export the optional JIT halt bridge on iOS; leave macOS exports unchanged.
+  set(LIBRETRO_EXPORTS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/libretro.osx.def")
+  if(IOS)
+    set(LIBRETRO_EXPORTS_FILE "${CMAKE_CURRENT_BINARY_DIR}/libretro.ios.def")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/libretro.osx.def"
+                   "${LIBRETRO_EXPORTS_FILE}" COPYONLY)
+    file(APPEND "${LIBRETRO_EXPORTS_FILE}" "_azahar_jit_request_halt\n")
+  endif()
+  target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${LIBRETRO_EXPORTS_FILE}")
 else()
   target_link_libraries(citra_libretro PRIVATE "-Wl,-Bsymbolic")
 endif()
