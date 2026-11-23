@@ -20,6 +20,8 @@ LiveContainer, StikDebug, a 3DS GPU or commercial ROM data.
 | invalidate_stress | Patch and invalidate the same guest instruction 32 times to catch stale code |
 | opt_linked | Tests the block-linking speed preset on active ARM32 loops, verifying state and Run/Step budgets |
 | opt_fast | Tests restored upstream dispatch optimizations with the same correctness checks |
+| opt_turbo | Checks 32 MiB optimized ARM64 JIT code cache and long execution budgets |
+| opt_direct | Tests optimized JIT with direct guest-RAM page-table loads and stores |
 
 The interpreter deliberately supports **only** this fixture. The longer parity
 case keeps the loop active for all 2,048 instructions. These tests use
@@ -63,3 +65,15 @@ mode stalls or crashes, reopen the game in Compatibility. Benchmark with the
 same game scene and graphics settings; measure both emulated FPS and delivered
 images/s in diagnostics. Host ARM64 tests cannot prove iOS TXM compatibility
 or guarantee any performance benefit.
+
+## Additional opt-in JIT experiments
+
+**Turbo** uses a 32 MiB JIT code cache and skips the old 512-step/run-80
+single-stepping startup probes. It still caps guest ticks at the next scheduler
+event, retains SVC rescheduling, and uses the compiled atomic host lock.
+**Turbo + Direct RAM** adds direct mapped-RAM page-table access, falling back
+to callbacks for unmapped pages. This can be incorrect if a game expects a
+memory callback on an address accessed through a direct mapping; treat it as
+high risk. Neither mode enables the unsafe IgnoreGlobalMonitor optimization.
+The default is still Fast Dispatch. Switch back if any new experiment stalls.
+The ARM64 host tests do not prove iOS 27 TXM runtime safety or FPS improvement.

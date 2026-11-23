@@ -7,6 +7,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -409,7 +410,8 @@ void TestStepRunTransition() {
 
 
 void TestOptimizationMode(const std::string& mode) {
-    Require(mode == "linked" || mode == "fast", "unknown speed preset");
+    Require(mode == "linked" || mode == "fast" || mode == "turbo" || mode == "direct",
+            "unknown speed preset");
     Environment env;
     WriteActiveLoop(env.memory);
     ReferenceCPU reference;
@@ -419,6 +421,17 @@ void TestOptimizationMode(const std::string& mode) {
     auto config = ConservativeConfig(env);
     config.optimizations = Core::SelectIOSJitOptimizations(
         Dynarmic::A32::UserConfig{}.optimizations, mode);
+    std::unique_ptr<std::array<u8*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>> pages;
+    if (mode == "turbo" || mode == "direct")
+        config.code_cache_size = 32 * 1024 * 1024;
+    if (mode == "direct") {
+        // Map only the active RAM data page; missing pages use callbacks.
+        pages = std::make_unique<std::array<u8*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>>();
+        pages->fill(nullptr);
+        (*pages)[kData >> Dynarmic::A32::UserConfig::PAGE_BITS] =
+            env.memory.bytes.data() + kData;
+        config.page_table = pages.get();
+    }
     Dynarmic::A32::Jit cpu(config);
     InitCPU(cpu);
 
@@ -427,7 +440,7 @@ void TestOptimizationMode(const std::string& mode) {
                        u64{16384}}) {
         RunActiveBudget(cpu, env, reference, budget);
     }
-    if (mode == "fast") {
+    if (mode == "fast" || mode == "turbo" || mode == "direct") {
         // Stress the same high budget selected for on-device Fast Dispatch.
         RunActiveBudget(cpu, env, reference, Core::PostStartupJitCap(true, true));
     }
@@ -547,7 +560,7 @@ int main(int argc, char** argv) {
 #if !defined(__aarch64__) && !defined(__arm64__)
         throw std::runtime_error("This harness MUST execute on native ARM64");
 #endif
-        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive|opt_linked|opt_fast");
+        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive|opt_linked|opt_fast|opt_turbo|opt_direct");
         const std::string name{argv[1]};
         if (name == "parity") TestParity();
         else if (name == "budget") TestBudget();
@@ -561,6 +574,8 @@ int main(int argc, char** argv) {
         else if (name == "exclusive") TestExclusive();
         else if (name == "opt_linked") TestOptimizationMode("linked");
         else if (name == "opt_fast") TestOptimizationMode("fast");
+        else if (name == "opt_turbo") TestOptimizationMode("turbo");
+        else if (name == "opt_direct") TestOptimizationMode("direct");
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {

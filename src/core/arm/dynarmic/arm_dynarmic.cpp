@@ -49,6 +49,8 @@ static std::atomic<unsigned> gAzaharJITRunCount{0};
 static std::atomic<bool> gAzaharJITStartupProbesComplete{false};
 // Set once when creating the core's JITs; read without allocating on hot runs.
 static std::atomic<bool> gAzaharJITFastDispatch{false};
+// Opt-in experiment: skip the obsolete startup probes after the host spinlock fix.
+static std::atomic<bool> gAzaharJITTurboStartup{false};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
@@ -319,6 +321,7 @@ ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_,
         gAzaharJITRunCount.store(0, std::memory_order_relaxed);
         gAzaharJITStartupProbesComplete.store(false, std::memory_order_relaxed);
         gAzaharJITFastDispatch.store(false, std::memory_order_relaxed);
+        gAzaharJITTurboStartup.store(false, std::memory_order_relaxed);
         gAzaharJITFullRunStarted.store(false, std::memory_order_relaxed);
     }
 #endif
@@ -338,13 +341,26 @@ void ARM_Dynarmic::Run() {
 
 #ifdef IOS
     AzaharScopedJITRun active_jit{jit};
+    if (gAzaharJITTurboStartup.load(std::memory_order_relaxed)) {
+        // Experimental direct startup: maintain timer limits and the JIT halt
+        // bridge. Only the obsolete instruction-by-instruction probes are skipped.
+        const bool first_run =
+            !gAzaharJITFullRunStarted.exchange(true, std::memory_order_relaxed);
+        gAzaharJITBudgetCap = PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame(), true);
+        if (first_run)
+            LibRetro::DisplayMessage("JIT27TRACE turbo first full Run entered");
+        jit->Run();
+        if (first_run)
+            LibRetro::DisplayMessage("JIT27TRACE turbo first full Run returned");
+        return;
+    }
     if (gAzaharJITStartupProbesComplete.load(std::memory_order_relaxed)) {
         // After the proven startup workaround, use longer native JIT runs in
         // Fast Dispatch mode. Keep cycle counting and safe-exit requests active.
         // GetTicksRemaining still respects the scheduler's next event.
-        gAzaharJITBudgetCap = PostStartupJitCap(
-            LibRetro::HasSubmittedSoftwareFrame(),
-            gAzaharJITFastDispatch.load(std::memory_order_relaxed));
+        gAzaharJITBudgetCap =
+            PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame(),
+                              gAzaharJITFastDispatch.load(std::memory_order_relaxed));
         jit->Run();
         return;
     }
@@ -642,25 +658,32 @@ void ARM_Dynarmic::ServeBreak([[maybe_unused]] int signal) {
 std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     Dynarmic::A32::UserConfig config;
 #ifdef IOS
-    // 16 MiB avoids Dynarmic's documented ~8 MiB minimum.
-    config.code_cache_size = 16 * 1024 * 1024;
+    // Larger code cache is opt-in because iOS TXM allocation may fail.
+    const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "fast");
+    const bool turbo_mode = jit_mode == "turbo" || jit_mode == "direct";
+    config.code_cache_size = (turbo_mode ? 32 : 16) * 1024 * 1024;
     // Build #18 confirmed 512 generated guest instructions execute correctly,
     // but full jit->Run() never returns from a tight PC 0x00100034..0x3c loop.
     // Disable direct block linking, return-stack prediction and fast dispatch
     // temporarily to force execution through the dispatcher, which checks the
     // cycle budget. Keep other safe IR optimizations and cycle counting on.
-    // Use upstream Dynarmic dispatch optimizations by default. An explicit
-    // compatibility or linked preset is still available per game if needed.
-    const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "fast");
-    gAzaharJITFastDispatch.store(jit_mode == "fast", std::memory_order_relaxed);
+    // Fast Dispatch remains the default; Turbo and Direct RAM are opt-in.
+    gAzaharJITFastDispatch.store(jit_mode == "fast" || turbo_mode, std::memory_order_relaxed);
+    gAzaharJITTurboStartup.store(turbo_mode, std::memory_order_relaxed);
     config.optimizations = SelectIOSJitOptimizations(config.optimizations, jit_mode);
+    if (jit_mode == "direct" && current_page_table) {
+        // Experimental mapped-RAM fast path. Unmapped regions and exclusive
+        // accesses continue to use the existing memory system callbacks.
+        config.page_table = &current_page_table->GetPointerArray();
+    }
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct
     // memory accesses from the rest of the iOS JIT. Loads and stores then use
     // the existing MemorySystem callbacks, including exclusive accesses.
     char optimization_status[128];
     std::snprintf(optimization_status, sizeof(optimization_status),
-                  "JIT27TRACE JIT optimization mode=%s; guest memory callbacks", jit_mode.c_str());
+                  "JIT27TRACE JIT optimization mode=%s; guest memory %s", jit_mode.c_str(),
+                  config.page_table ? "page table" : "callbacks");
     LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {

@@ -147,7 +147,7 @@
     NSString *key=AZOptionKeys()[ip.row]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
         message:[key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
-                ([key isEqual:@"AzaharJITSpeed"] ? @"Compatibility keeps the proven JIT settings. Experimental speed modes may freeze. Relaunch the game to apply." :
+                ([key isEqual:@"AzaharJITSpeed"] ? @"Fast Dispatch is the default. Turbo skips historical startup probes and uses a larger code cache; Direct RAM also enables fast page-table memory access. Both are experimental and may freeze or corrupt guest state. Relaunch to apply." :
                  ([key isEqual:@"citra_resolution_factor"] ? @"1× is native 3DS resolution. With software graphics, 2×–4× upscale the image rather than rendering extra 3D detail. Higher settings cost memory and performance. Relaunch the game to apply." : nil))
         preferredStyle:UIAlertControllerStyleActionSheet];
     if (url) [menu addAction:[UIAlertAction actionWithTitle:@"Use universal setting" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){

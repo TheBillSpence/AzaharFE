@@ -204,7 +204,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)reportJITStage:(NSString *)message {
     BOOL changed = NO;
-    if ([message containsString:@"JIT27TRACE step 1/512"] && [message hasSuffix:@"returned"]) {
+    if (([message containsString:@"JIT27TRACE step 1/512"] ||
+         [message containsString:@"JIT27TRACE turbo first full Run"]) &&
+        [message hasSuffix:@"returned"]) {
         changed = !_guestRan.exchange(true);
         _jitPending.store(false);
     } else if ([message containsString:@"using interpreter"]) {

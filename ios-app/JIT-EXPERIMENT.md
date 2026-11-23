@@ -240,3 +240,13 @@ Likewise, the direct guest page table remains disabled until device-verified.
 This is a performance experiment, not an assurance of higher FPS: software
 graphics still lacks Metal acceleration. Benchmark with the same game at
 1× output resolution; compare 5-second FPS and frame/output timings.
+
+## Post-#45 experimental JIT modes
+
+Opt-in `turbo`: 32 MiB JIT cache and direct Dynarmic Run from startup, skipping
+the old single-step probes, while preserving the compiled atomic SpinLock,
+SVC scheduler exits, tick budget, watchdog and halt bridge. Opt-in `direct`:
+same, plus the guest mapped-RAM page table. Default `fast` is unchanged and
+retains the prior startup workaround. New ARM64 host regression tests cover
+both modes, including mapped page-table guest RAM parity. On-device benchmarks
+are required, especially for the direct-memory mode; back up saved games.

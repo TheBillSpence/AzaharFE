@@ -13,8 +13,8 @@ namespace Core {
 inline Dynarmic::OptimizationFlag SelectIOSJitOptimizations(Dynarmic::OptimizationFlag upstream,
                                                             std::string_view mode) {
     using Flag = Dynarmic::OptimizationFlag;
-    if (mode == "fast") {
-        // Experimental: restore upstream block linking, return-stack prediction
+    if (mode == "fast" || mode == "turbo" || mode == "direct") {
+        // Restore upstream block linking, return-stack prediction
         // and fast dispatch. Verify stability on the target iPhone.
         return upstream;
     }
