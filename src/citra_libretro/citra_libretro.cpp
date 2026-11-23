@@ -86,6 +86,11 @@ public:
 };
 
 CitraLibRetro* emu_instance;
+#if defined(IOS) && defined(ENABLE_VULKAN)
+extern "C" __attribute__((visibility("default"))) bool azahar_ios_vk_game_loaded() {
+    return emu_instance && emu_instance->game_loaded;
+}
+#endif
 #ifdef IOS
 static AzaharProfile::Clock::time_point gAzaharProfileWindow;
 static bool gAzaharBenchPending = false;

@@ -477,7 +477,7 @@ if (APPLE)
         set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${MOLTENVK_LIBRARY})
         if (IOS)
             list(APPEND PLATFORM_LIBRARIES "-framework Metal" "-framework QuartzCore"
-                 "-framework CoreGraphics" "-framework CoreVideo")
+                 "-framework CoreGraphics" "-framework CoreVideo" "-framework UIKit")
         endif()
     endif()
 elseif (WIN32)

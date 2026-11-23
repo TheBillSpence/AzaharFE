@@ -109,7 +109,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
     if(ENABLE_VULKAN)
       file(APPEND "${LIBRETRO_EXPORTS_FILE}"
           "_azahar_ios_vk_start\n_azahar_ios_vk_get_interface\n"
-          "_azahar_ios_vk_readback\n_azahar_ios_vk_shutdown\n")
+          "_azahar_ios_vk_readback\n_azahar_ios_vk_shutdown\n"
+          "_azahar_ios_vk_game_loaded\n")
     endif()
   endif()
   target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${LIBRETRO_EXPORTS_FILE}")

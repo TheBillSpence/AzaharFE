@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <mach/mach.h>
@@ -123,6 +124,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
     const void *(*_vkGetInterface)(void) = nullptr;
     bool (*_vkReadback)(unsigned, unsigned, const void **, size_t *) = nullptr;
     void (*_vkShutdown)(void) = nullptr;
+    bool (*_vkGameLoaded)(void) = nullptr;
 
     decltype(&retro_set_environment) _setEnvironment;
     decltype(&retro_set_video_refresh) _setVideoRefresh;
@@ -434,6 +436,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_readback"));
         _vkShutdown = reinterpret_cast<void (*)(void)>(
             dlsym(_libraryHandle, "azahar_ios_vk_shutdown"));
+        _vkGameLoaded = reinterpret_cast<bool (*)(void)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_game_loaded"));
         {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _requestJITHalt = reinterpret_cast<void (*)(void)>(
@@ -457,13 +461,23 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         BOOL loaded = _loadGame(&game);
         if (loaded && _vkRequested) {
             BOOL started = _vkStart && _vkGetInterface && _vkReadback && _vkShutdown &&
-                           _vkNegotiation && _vkRenderCallback.context_reset &&
+                           _vkGameLoaded && _vkNegotiation && _vkRenderCallback.context_reset &&
                            _vkStart(_vkNegotiation);
             if (started) {
                 _vkInterface = const_cast<void *>(_vkGetInterface());
                 if (_vkInterface) {
                     [self reportJITStage:@"JIT27TRACE MoltenVK device ready; initializing Vulkan PICA200"];
-                    _vkRenderCallback.context_reset();
+                    try {
+                        _vkRenderCallback.context_reset();
+                        started = _vkGameLoaded();
+                    } catch (const std::exception& ex) {
+                        [self reportJITStage:[NSString stringWithFormat:
+                            @"JIT27TRACE MoltenVK renderer initialization failed: %s", ex.what()]];
+                        started = NO;
+                    } catch (...) {
+                        [self reportJITStage:@"JIT27TRACE MoltenVK renderer raised an exception"];
+                        started = NO;
+                    }
                 } else {
                     started = NO;
                 }
