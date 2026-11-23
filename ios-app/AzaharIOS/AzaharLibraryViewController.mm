@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "AzaharEmulator.h"
+#import "AZPreferences.h"
+#import "AZSettings.h"
 #include "libretro.h"
 
 static NSArray<NSString *> *GameExtensions(void) {
@@ -51,9 +53,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [super viewDidLoad];
     // Keep long ROM filenames from competing with the navigation back button.
     self.title = self.game.lastPathComponent.stringByDeletingPathExtension;
-    self.view.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1];
+    self.view.backgroundColor = AZNavy();
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"] style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
+    self.navigationItem.rightBarButtonItem.accessibilityLabel = @"Session settings";
     self.screen = [UIImageView new];
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.backgroundColor = UIColor.blackColor;
@@ -107,7 +111,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
             button.titleLabel.minimumScaleFactor = 0.72;
             button.accessibilityLabel = labels[row][col];
             button.tintColor = UIColor.whiteColor;
-            button.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
+            button.backgroundColor = AZPanel();
             button.layer.cornerRadius = 8;
             [button addTarget:self action:@selector(press:)
                 forControlEvents:UIControlEventTouchDown];
@@ -157,17 +161,37 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.started = YES;
     self.host = [AzaharEmulator new];
     self.host.delegate = self;
-    self.host.experimentalJITEnabled = [[NSUserDefaults standardUserDefaults]
-        boolForKey:@"AzaharExperimentalJIT"];
+    self.host.experimentalJITEnabled = [AZValue(@"AzaharExperimentalJIT", self.game) isEqual:@"on"];
     NSError *error = nil;
     if (![self.host startGameAtURL:self.game error:&error]) {
         [self azaharEmulatorDidFail:error.localizedDescription ?: @"Unable to load Azahar."];
     }
 }
 
+- (void)showSettings {
+    AZSettings *settings = [[AZSettings alloc] initForGame:NO];
+    settings.title = @"Settings";
+    settings.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Game Settings" style:UIBarButtonItemStylePlain target:self action:@selector(showCurrentProfile)];
+    settings.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(closeSettings)];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
+    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+- (void)showCurrentProfile {
+    AZSettings *profile = [[AZSettings alloc] initForGame:YES];
+    profile.game = self.game;
+    profile.sessionOptions = self.host.launchOptions;
+    profile.title = @"Current game";
+    UINavigationController *nav = (UINavigationController *)self.presentedViewController;
+    [nav pushViewController:profile animated:YES];
+}
+- (void)closeSettings { [self dismissViewControllerAnimated:YES completion:nil]; }
+
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self.host stop];
+    if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) [self.host stop];
 }
 
 - (void)press:(UIButton *)button {
@@ -185,6 +209,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)azaharEmulatorDidChangeJITStatus:(NSString *)status {
     self.status.text = status;
+    self.navigationItem.prompt = [AzaharEmulator sessionJITStatus];
 }
 
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
@@ -208,42 +233,18 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 @interface AzaharLibraryViewController : UITableViewController <UIDocumentPickerDelegate>
 @property (nonatomic, copy) NSArray<NSURL *> *games;
+@property (nonatomic, copy) void (^libraryChanged)(NSArray<NSURL *> *);
+@property (nonatomic, copy) void (^gameSelected)(NSURL *);
+- (void)importGame;
+- (void)refreshGames;
 @end
 
 @implementation AzaharLibraryViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Azahar JIT Test";
-    self.tableView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1];
-    self.navigationController.navigationBar.barStyle = UIBarStyleBlack;
-    self.navigationController.navigationBar.tintColor = UIColor.systemTealColor;
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-        target:self action:@selector(importGame)];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"JIT OFF" style:UIBarButtonItemStylePlain
-        target:self action:@selector(toggleJIT)];
-    [self refreshJITButton];
-
-    // A wrapping footer prevents the instructions from clipping on
-    // narrower iPhones, and the last row stays clear of the build badge.
-    UIView *footer = [[UIView alloc] initWithFrame:
-        CGRectMake(0, 0, self.view.bounds.size.width, 176)];
-    UILabel *help = MakeLabel(
-        @"Experimental frontend\nImport a decrypted, legally obtained 3DS game.\n"
-        @"JIT ON requires StikDebug universal.js (otherwise it may crash).\n"
-        @"Audio and touchscreen are not implemented.", 13);
-    help.textAlignment = NSTextAlignmentLeft;
-    [footer addSubview:help];
-    [NSLayoutConstraint activateConstraints:@[
-        [help.topAnchor constraintEqualToAnchor:footer.topAnchor constant:14],
-        [help.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:16],
-        [help.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-16],
-        [help.bottomAnchor constraintLessThanOrEqualToAnchor:footer.bottomAnchor constant:-8]
-    ]];
-    self.tableView.tableFooterView = footer;
-    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 28, 0);
+    self.tableView.backgroundColor = AZNavy();
+    self.tableView.separatorColor = [AZBlue() colorWithAlphaComponent:0.18];
     [self refreshGames];
 }
 
@@ -263,35 +264,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         sortedArrayUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
             return [a.lastPathComponent localizedCaseInsensitiveCompare:b.lastPathComponent];
         }];
+    if (self.libraryChanged) self.libraryChanged(self.games);
+    self.tableView.backgroundView = self.games.count ? nil : MakeLabel(@"Add a game to your library.", 17);
     [self.tableView reloadData];
-}
-
-- (void)refreshJITButton {
-    BOOL on = [[NSUserDefaults standardUserDefaults] boolForKey:@"AzaharExperimentalJIT"];
-    self.navigationItem.leftBarButtonItem.title = on ? @"JIT ON" : @"JIT OFF";
-}
-
-- (void)toggleJIT {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults boolForKey:@"AzaharExperimentalJIT"]) {
-        [defaults setBool:NO forKey:@"AzaharExperimentalJIT"];
-        [self refreshJITButton];
-        return;
-    }
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Experimental JIT test"
-        message:@"Enable JIT through StikDebug or LiveContainer, then launch the game. "
-                @"For iOS 27, select universal.js in StikDebug FIRST. Azahar prepares writable "
-                @"and executable memory mappings. JIT is experimental and OFF by default."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-        style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Enable JIT Test"
-        style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-            [defaults setBool:YES forKey:@"AzaharExperimentalJIT"];
-            [self refreshJITButton];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)importGame {
@@ -299,7 +274,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = YES;
-    [self presentViewController:picker animated:YES completion:nil];
+    [self.navigationController presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller
@@ -333,9 +308,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
         reuseIdentifier:@"Game"];
     NSURL *url = self.games[indexPath.row];
-    cell.textLabel.text = url.lastPathComponent;
-    cell.detailTextLabel.text = @"Tap to attempt launch";
-    cell.backgroundColor = UIColor.clearColor;
+    cell.textLabel.text = url.lastPathComponent.stringByDeletingPathExtension;
+    cell.detailTextLabel.text = url.pathExtension.uppercaseString;
+    cell.backgroundColor = AZPanel();
+    cell.imageView.image = [UIImage systemImageNamed:@"gamecontroller.fill"];
+    cell.imageView.tintColor = AZBlue();
     cell.textLabel.textColor = UIColor.whiteColor;
     cell.detailTextLabel.textColor = UIColor.lightGrayColor;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -344,6 +321,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (self.gameSelected) self.gameSelected(self.games[indexPath.row]);
     [self.navigationController pushViewController:
         [[AzaharGameViewController alloc] initWithGame:self.games[indexPath.row]]
         animated:YES];
@@ -356,12 +334,145 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style
     forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (style == UITableViewCellEditingStyleDelete) {
-        [NSFileManager.defaultManager removeItemAtURL:self.games[indexPath.row] error:NULL];
+        NSURL *url = self.games[indexPath.row];
+        if ([NSFileManager.defaultManager removeItemAtURL:url error:NULL]) AZForgetGame(url);
         [self refreshGames];
     }
 }
 @end
 
-extern "C" UIViewController *AzaharCreateLibraryController(void) {
-    return [[AzaharLibraryViewController alloc] initWithStyle:UITableViewStylePlain];
+@interface AZHome : UIViewController <UIScrollViewDelegate, UITabBarDelegate>
+@property (nonatomic, strong) UIScrollView *pager;
+@property (nonatomic, strong) UITabBar *tabs;
+@property (nonatomic, strong) UILabel *footer;
+@property (nonatomic, strong) NSArray<UIViewController *> *pages;
+@property (nonatomic, strong) AzaharLibraryViewController *library;
+@property (nonatomic, strong) AZSettings *profile;
+@property (nonatomic) NSInteger page;
+@property (nonatomic) CGFloat pageWidth;
+@end
+
+@implementation AZHome
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = AZNavy();
+    self.navigationItem.backButtonTitle = @"Library";
+    UIButton *add = [UIButton buttonWithType:UIButtonTypeSystem];
+    [add setTitle:@"+ Add Game" forState:UIControlStateNormal];
+    [add setTitleColor:AZNavy() forState:UIControlStateNormal];
+    add.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+    add.contentEdgeInsets = UIEdgeInsetsMake(8,14,8,14);
+    add.backgroundColor = AZYellow(); add.layer.cornerRadius = 16;
+    [add addTarget:self action:@selector(importGame) forControlEvents:UIControlEventTouchUpInside];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:add];
+
+    self.library = [[AzaharLibraryViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    self.profile = [[AZSettings alloc] initForGame:YES];
+    UIViewController *reserved = [UIViewController new];
+    reserved.view.backgroundColor = AZNavy();
+    self.pages = @[self.library, reserved, self.profile, [[AZSettings alloc] initForGame:NO]];
+    __weak AZHome *weakSelf = self;
+    void (^select)(NSURL *) = ^(NSURL *game) {
+        weakSelf.profile.game = game;
+        [NSUserDefaults.standardUserDefaults setObject:game.lastPathComponent forKey:@"AZSelectedGame"];
+        [weakSelf.profile.tableView reloadData];
+    };
+    self.profile.selectGame = select;
+    self.library.gameSelected = select;
+    self.library.libraryChanged = ^(NSArray<NSURL *> *games) {
+        weakSelf.profile.games = games;
+        NSString *saved = [NSUserDefaults.standardUserDefaults stringForKey:@"AZSelectedGame"];
+        NSURL *selected = games.firstObject;
+        for (NSURL *url in games) if ([url.lastPathComponent isEqual:saved]) { selected=url; break; }
+        weakSelf.profile.game = selected;
+        if (weakSelf.profile.isViewLoaded) [weakSelf.profile.tableView reloadData];
+    };
+
+    self.pager = [UIScrollView new];
+    self.pager.delegate = self;
+    self.pager.pagingEnabled = YES;
+    self.pager.directionalLockEnabled = YES;
+    self.pager.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.pager.showsHorizontalScrollIndicator = NO;
+    self.pager.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.pager];
+    for (UIViewController *page in self.pages) {
+        [self addChildViewController:page];
+        [self.pager addSubview:page.view];
+        [page didMoveToParentViewController:self];
+    }
+
+    self.footer = MakeLabel([NSString stringWithFormat:@"——AzaharFE——\n%@", AZVersion()], 13);
+    self.footer.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
+    self.footer.textColor = AZBlue();
+    self.tabs = [UITabBar new];
+    self.tabs.delegate = self;
+    self.tabs.translatesAutoresizingMaskIntoConstraints = NO;
+    UITabBarAppearance *barStyle = [UITabBarAppearance new];
+    [barStyle configureWithOpaqueBackground]; barStyle.backgroundColor = AZPanel();
+    self.tabs.standardAppearance = barStyle;
+    if (@available(iOS 15.0, *)) self.tabs.scrollEdgeAppearance = barStyle;
+    self.tabs.tintColor = AZBlue();
+    self.tabs.unselectedItemTintColor = [UIColor colorWithRed:0.62 green:0.70 blue:0.81 alpha:1];
+    NSArray *names = @[@"Library", @"More", @"Game Settings", @"Settings"];
+    NSArray *symbols = @[@"square.grid.2x2", @"ellipsis.circle", @"slider.horizontal.3", @"gearshape"];
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSInteger i=0; i<4; ++i) {
+        [items addObject:[[UITabBarItem alloc] initWithTitle:names[i] image:[UIImage systemImageNamed:symbols[i]] tag:i]];
+    }
+    self.tabs.items = items;
+    [self.view addSubview:self.footer]; [self.view addSubview:self.tabs];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.pager.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.pager.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.pager.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [self.pager.bottomAnchor constraintEqualToAnchor:self.tabs.topAnchor],
+        [self.tabs.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [self.tabs.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.tabs.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.footer.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+        [self.footer.bottomAnchor constraintEqualToAnchor:self.tabs.topAnchor constant:-8]
+    ]];
+    self.footer.backgroundColor = AZNavy();
+    [self selectPage:0];
 }
+- (void)importGame { [self.library importGame]; }
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGSize size=self.pager.bounds.size;
+    for (NSUInteger i=0; i<self.pages.count; ++i) {
+        CGFloat footerHeight = i==3 ? self.footer.intrinsicContentSize.height+16 : 0;
+        self.pages[i].view.frame=CGRectMake(size.width*i,0,size.width,MAX(0,size.height-footerHeight));
+    }
+    self.pager.contentSize=CGSizeMake(size.width*self.pages.count,size.height);
+    if (self.pageWidth != size.width) {
+        self.pageWidth=size.width;
+        self.pager.contentOffset=CGPointMake(self.page*size.width,0);
+    }
+}
+- (void)selectPage:(NSInteger)index {
+    self.page=index;
+    self.tabs.selectedItem=self.tabs.items[index];
+    self.title=self.tabs.selectedItem.title;
+    self.footer.hidden=index!=3;
+    for (NSUInteger i=0;i<self.pages.count;++i) self.pages[i].view.accessibilityElementsHidden=(NSInteger)i!=index;
+}
+- (void)tabBar:(UITabBar *)bar didSelectItem:(UITabBarItem *)item {
+    [self selectPage:item.tag];
+    [self.pager setContentOffset:CGPointMake(item.tag*self.pager.bounds.size.width,0) animated:!UIAccessibilityIsReduceMotionEnabled()];
+}
+- (void)syncPage {
+    if (self.pager.bounds.size.width>0) {
+        NSInteger index=lround(self.pager.contentOffset.x/self.pager.bounds.size.width);
+        [self selectPage:MAX(0,MIN(3,index))];
+    }
+}
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView { [self syncPage]; }
+- (void)scrollViewDidEndScrollingAnimation:(UIScrollView *)scrollView { [self syncPage]; }
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    if (!decelerate) [self syncPage];
+}
+@end
+
+extern "C" UIViewController *AzaharCreateLibraryController(void) { return [AZHome new]; }

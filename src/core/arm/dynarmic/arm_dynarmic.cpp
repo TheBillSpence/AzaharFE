@@ -115,7 +115,28 @@ public:
     }
 
     void CallSVC(std::uint32_t swi) override {
+#ifdef IOS
+        const bool trace = svc_reports < 32;
+        char message[128];
+        if (trace) {
+            ++svc_reports;
+            std::snprintf(message, sizeof(message), "JIT27TRACE SVC 0x%02x core=%u entered", swi,
+                          parent.GetID());
+            LibRetro::DisplayMessage(message);
+        }
+#endif
         svc_context.CallSVC(swi);
+#ifdef IOS
+        // A32's SVC terminal saves the next PC before invoking the callback
+        // and checks for a halt afterwards. Yield to CoreTiming at this kernel
+        // boundary rather than starting another guest block in the same Run.
+        parent.PrepareReschedule();
+        if (trace) {
+            std::snprintf(message, sizeof(message), "JIT27TRACE SVC 0x%02x core=%u returned", swi,
+                          parent.GetID());
+            LibRetro::DisplayMessage(message);
+        }
+#endif
     }
 
     void ExceptionRaised(VAddr pc, Dynarmic::A32::Exception exception) override {
@@ -235,6 +256,7 @@ public:
 #ifdef IOS
     u32 last_code_page = ~u32{0};
     unsigned code_page_reports = 0;
+    unsigned svc_reports = 0;
     unsigned add_tick_reports = 0;
     unsigned remaining_tick_reports = 0;
 #endif

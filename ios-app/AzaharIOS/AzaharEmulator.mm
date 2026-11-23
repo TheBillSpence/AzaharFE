@@ -1,4 +1,5 @@
 #import "AzaharEmulator.h"
+#import "AZPreferences.h"
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -96,6 +97,9 @@ static __weak AzaharEmulator *sCurrentEmulator;
     std::atomic<bool> _frameQueued;
     std::atomic<uint64_t> _buttons;
     BOOL _jitEnabled;
+    NSDictionary<NSString *, NSString *> *_gameOptions;
+    std::atomic<bool> _guestRan;
+    std::atomic<bool> _jitPending;
     std::atomic<uint64_t> _completedSlices;
     std::atomic<bool> _waitingForFirstFrame;
     NSObject *_playSession;
@@ -170,11 +174,30 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 @implementation AzaharEmulator
 
++ (NSString *)sessionJITStatus {
+    AzaharEmulator *host = sCurrentEmulator;
+    if (!host || host->_stopping.load()) return @"JIT is inactive";
+    if (host->_guestRan.load()) return @"JIT is active";
+    return host->_jitPending.load() ? @"Checking JIT…" : @"JIT is inactive";
+}
+
+- (NSDictionary<NSString *, NSString *> *)launchOptions { return _gameOptions; }
+
 - (BOOL)jitActive { return _jitEnabled; }
 
 // Persist each stage before risky JIT debugger operations, because a stalled
 // breakpoint may stop every process thread before a UI message can repaint.
 - (void)reportJITStage:(NSString *)message {
+    BOOL changed = NO;
+    if ([message containsString:@"JIT27TRACE step 1/512"] && [message hasSuffix:@"returned"]) {
+        changed = !_guestRan.exchange(true);
+        _jitPending.store(false);
+    } else if ([message containsString:@"using interpreter"]) {
+        changed = _jitPending.exchange(false);
+    }
+    if (changed) dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:@"AzaharSessionStatusChanged" object:nil];
+    });
     NSLog(@"Azahar JIT27: %@", message);
     @synchronized (self) {
         if (_diagnosticsFile) {
@@ -258,6 +281,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _stopping.store(false);
         _frameQueued.store(false);
         _buttons.store(0);
+        _guestRan.store(false);
+        _jitPending.store(self.experimentalJITEnabled);
+        NSMutableDictionary *options = [NSMutableDictionary dictionary];
+        for (NSString *key in AZOptionKeys()) {
+            options[key] = AZValue(key, url);
+        }
+        _gameOptions = [options copy];
         _playSession = [NSObject new];
         _completedSlices.store(0);
         _waitingForFirstFrame.store(false);
@@ -285,6 +315,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         dispatch_async(dispatch_get_main_queue(), ^{
             @synchronized (AzaharEmulator.class) {
                 if (sCurrentEmulator == self) sCurrentEmulator = nil;
+                [NSNotificationCenter.defaultCenter postNotificationName:@"AzaharSessionStatusChanged" object:nil];
             }
         });
     });
@@ -428,6 +459,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (!data) return NO;
             *(unsigned *)data = 0; // Legacy options; use the core's defaults.
             return YES;
+        case RETRO_ENVIRONMENT_GET_VARIABLE: {
+            auto *variable = static_cast<retro_variable *>(data);
+            if (!variable || !variable->key) return NO;
+            NSString *key = [NSString stringWithUTF8String:variable->key];
+            NSString *value = key ? _gameOptions[key] : nil;
+            variable->value = value.UTF8String;
+            return value != nil;
+        }
         case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
             if (!data) return NO;
             *(bool *)data = false;

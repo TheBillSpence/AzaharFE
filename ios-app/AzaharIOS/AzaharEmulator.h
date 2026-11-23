@@ -12,6 +12,9 @@
 @property (nonatomic, assign) BOOL experimentalJITEnabled;
 @property (nonatomic, readonly) BOOL jitActive;
 
++ (NSString *)sessionJITStatus;
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *launchOptions;
+
 // Loads the bundled libretro dylib and starts the emulation loop on a worker queue.
 - (BOOL)startGameAtURL:(NSURL *)url error:(NSError **)error;
 - (void)stop;
