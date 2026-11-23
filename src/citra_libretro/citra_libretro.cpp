@@ -63,6 +63,9 @@ public:
     std::unique_ptr<EmuWindow_LibRetro> emu_window;
     bool game_loaded = false;
     bool first_run_loop = true;
+#ifdef IOS
+    LibRetro::FrameStopCallback should_stop = nullptr;
+#endif
     struct retro_hw_render_callback hw_render{};
 };
 
@@ -70,6 +73,9 @@ CitraLibRetro* emu_instance;
 
 void retro_init() {
     emu_instance = new CitraLibRetro();
+#ifdef IOS
+    emu_instance->should_stop = LibRetro::GetFrameStopHandler();
+#endif
     Common::Log::LibRetroStart(LibRetro::GetLoggingBackend());
     Common::Log::SetGlobalFilter(emu_instance->log_filter);
 
@@ -296,23 +302,26 @@ void retro_run() {
     }
 
 #ifdef IOS
-    unsigned first_frame_slices = 0;
+    uint64_t completed_slices = 0;
 #endif
     while (!emu_instance->emu_window->HasSubmittedFrame()) {
 #ifdef IOS
-        if (trace_jit_first_frame && first_frame_slices == 0) {
+        if (emu_instance->should_stop && emu_instance->should_stop(completed_slices)) {
+            return;
+        }
+        if (trace_jit_first_frame && completed_slices == 0) {
             LibRetro::DisplayMessage("JIT27TRACE entering first System::RunLoop");
         }
 #endif
         auto result = Core::System::GetInstance().RunLoop();
 #ifdef IOS
+        ++completed_slices;
         if (trace_jit_first_frame) {
-            ++first_frame_slices;
-            if (first_frame_slices == 1) {
+            if (completed_slices == 1) {
                 LibRetro::DisplayMessage("JIT27TRACE first System::RunLoop returned");
-            } else if (first_frame_slices == 100) {
+            } else if (completed_slices == 100) {
                 LibRetro::DisplayMessage("JIT27TRACE 100 RunLoop slices; no video frame");
-            } else if (first_frame_slices == 10000) {
+            } else if (completed_slices == 10000) {
                 LibRetro::DisplayMessage("JIT27TRACE 10000 RunLoop slices; no video frame");
             }
         }

@@ -11,6 +11,9 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "libretro.h"
+#ifdef IOS
+#include "ios_frame_control.h"
+#endif
 
 namespace LibRetro {
 
@@ -126,6 +129,7 @@ void SetVFSCallback(struct retro_vfs_interface_info* vfs_iface_info);
 #endif
 
 #ifdef IOS
+FrameStopCallback GetFrameStopHandler();
 bool CanUseJIT();
 #endif
 

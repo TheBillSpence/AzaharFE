@@ -228,6 +228,11 @@ void SetVFSCallback(struct retro_vfs_interface_info* vfs_iface_info) {
 #endif
 
 #ifdef IOS
+FrameStopCallback GetFrameStopHandler() {
+    FrameStopCallback callback = nullptr;
+    return environ_cb(GetFrameStopCallback, &callback) ? callback : nullptr;
+}
+
 bool CanUseJIT() {
     bool can_jit = false;
     return environ_cb(RETRO_ENVIRONMENT_GET_JIT_CAPABLE, &can_jit) && can_jit;

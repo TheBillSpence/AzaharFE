@@ -13,7 +13,7 @@
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "libretro.h"
+#include "../../src/citra_libretro/ios_frame_control.h"
 
 // Apple's CS_DEBUGGED flag indicates that a debugger has granted JIT access.
 static bool AzaharDebuggerIsEnabled() {
@@ -96,8 +96,12 @@ static __weak AzaharEmulator *sCurrentEmulator;
     std::atomic<bool> _frameQueued;
     std::atomic<uint64_t> _buttons;
     BOOL _jitEnabled;
-    BOOL _running;
-    NSMutableString *_jitDiagnostics;
+    std::atomic<uint64_t> _completedSlices;
+    std::atomic<bool> _waitingForFirstFrame;
+    NSObject *_playSession;
+    BOOL _receivedFirstVideo;
+    BOOL _displayedFirstVideo;
+    FILE *_diagnosticsFile;
     NSString *_systemDirectory;
     NSString *_saveDirectory;
     NSString *_lastMessage;
@@ -120,11 +124,17 @@ static __weak AzaharEmulator *sCurrentEmulator;
 - (int16_t)inputStateForDevice:(unsigned)device identifier:(unsigned)identifier;
 - (void)runGameAtURL:(NSURL *)url;
 - (void)reportJITStage:(NSString *)message;
+- (BOOL)shouldStopAfterSlices:(uint64_t)slices;
 @end
 
 static bool AzaharEnvironment(unsigned command, void *data) {
     AzaharEmulator *host = sCurrentEmulator;
     return host ? [host handleEnvironment:command data:data] : false;
+}
+
+static bool AzaharShouldStop(uint64_t slices) {
+    AzaharEmulator *host = sCurrentEmulator;
+    return !host || [host shouldStopAfterSlices:slices];
 }
 
 static void AzaharVideo(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -167,15 +177,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)reportJITStage:(NSString *)message {
     NSLog(@"Azahar JIT27: %@", message);
     @synchronized (self) {
-        if (!_jitDiagnostics) _jitDiagnostics = [NSMutableString new];
-        [_jitDiagnostics appendFormat:@"%.3f %@\n",
-            [[NSDate date] timeIntervalSince1970], message];
-        NSString *documents = [_saveDirectory stringByDeletingLastPathComponent];
-        NSString *path = [documents stringByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
-        NSError *error = nil;
-        if (![_jitDiagnostics writeToFile:path atomically:YES
-                                encoding:NSUTF8StringEncoding error:&error]) {
-            NSLog(@"Azahar JIT27 diagnostic write failed: %@", error);
+        if (_diagnosticsFile) {
+            fprintf(_diagnosticsFile, "%.3f %s\n", NSDate.date.timeIntervalSince1970,
+                    message.UTF8String);
+            fflush(_diagnosticsFile);
         }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -243,26 +248,61 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)startGameAtURL:(NSURL *)url error:(NSError **)error {
-    if (_running) {
-        if (error) *error = [NSError errorWithDomain:@"AzaharIOS" code:3
-            userInfo:@{NSLocalizedDescriptionKey: @"A game is already running."}];
-        return NO;
+    @synchronized (AzaharEmulator.class) {
+        if (sCurrentEmulator) {
+            if (error) *error = [NSError errorWithDomain:@"AzaharIOS" code:3
+                userInfo:@{NSLocalizedDescriptionKey: @"The previous game is still running or stopping."}];
+            return NO;
+        }
+        if (![self loadLibrary:error]) return NO;
+        _stopping.store(false);
+        _frameQueued.store(false);
+        _buttons.store(0);
+        _playSession = [NSObject new];
+        _completedSlices.store(0);
+        _waitingForFirstFrame.store(false);
+        _receivedFirstVideo = NO;
+        _displayedFirstVideo = NO;
+        _lastMessage = nil;
+        _jitEnabled = NO;
+        NSString *path = [[_saveDirectory stringByDeletingLastPathComponent]
+            stringByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
+        _diagnosticsFile = fopen(path.fileSystemRepresentation, "w");
+        if (!_diagnosticsFile) NSLog(@"Could not open AzaharJITDiagnostics.txt");
+        sCurrentEmulator = self;
     }
-    if (![self loadLibrary:error]) return NO;
-
-    _running = YES;
-    _stopping.store(false);
-    _frameQueued.store(false);
-    _buttons.store(0);
-    _jitDiagnostics = [NSMutableString new];
-    // JIT readiness is evaluated on the worker, after StikDebug attaches.
-    _jitEnabled = NO;
-    sCurrentEmulator = self;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [self runGameAtURL:url];
+        if (_libraryHandle) {
+            dlclose(_libraryHandle);
+            _libraryHandle = nullptr;
+        }
+        @synchronized (self) {
+            if (_diagnosticsFile) fclose(_diagnosticsFile);
+            _diagnosticsFile = nullptr;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @synchronized (AzaharEmulator.class) {
+                if (sCurrentEmulator == self) sCurrentEmulator = nil;
+            }
+        });
     });
     return YES;
+}
+
+- (void)scheduleFirstFrameCheckAfter:(int)seconds {
+    NSObject *session = _playSession;
+    __weak AzaharEmulator *weakHost = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * (int64_t)NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        AzaharEmulator *host = weakHost;
+        if (!host || host->_playSession != session || host->_stopping.load() ||
+            !host->_waitingForFirstFrame.load()) return;
+        [host reportJITStage:[NSString stringWithFormat:
+            @"First frame pending after %d s; completed scheduler slices: %llu",
+            seconds, (unsigned long long)host->_completedSlices.load()]];
+    });
 }
 
 - (void)runGameAtURL:(NSURL *)url {
@@ -276,6 +316,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
 
+            if (_stopping.load()) return;
             const bool debugged = AzaharDebuggerIsEnabled();
             if (debugged) {
                 [self reportJITStage:@"2/7 Debugger found; requesting 16 KB JIT memory"];
@@ -296,6 +337,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             [self reportJITStage:@"JIT OFF; initializing interpreter"];
         }
 
+        if (_stopping.load()) return;
         _setEnvironment(AzaharEnvironment);
         _setVideoRefresh(AzaharVideo);
         _setAudioSample(AzaharAudioSample);
@@ -321,12 +363,21 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             auto nextFrame = std::chrono::steady_clock::now();
             auto fpsWindow = nextFrame;
             unsigned frameCount = 0;
+            bool firstFrame = true;
+            if (_jitEnabled) {
+                _waitingForFirstFrame.store(true);
+                [self scheduleFirstFrameCheckAfter:3];
+                [self scheduleFirstFrameCheckAfter:10];
+            }
             while (!_stopping.load()) {
                 @autoreleasepool {
                     _runFrame();
                 }
+                if (_stopping.load()) break;
                 ++frameCount;
-                if (frameCount == 1) {
+                if (firstFrame) {
+                    _waitingForFirstFrame.store(false);
+                    firstFrame = false;
                     [self reportJITStage:@"7/7 First frame returned; measuring FPS"];
                 }
                 auto now = std::chrono::steady_clock::now();
@@ -345,21 +396,20 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 if (nextFrame < now) nextFrame = now;
                 std::this_thread::sleep_until(nextFrame);
             }
+            _waitingForFirstFrame.store(false);
             _unloadGame();
         }
 
         _deinitCore();
-        sCurrentEmulator = nil;
-        if (_libraryHandle) {
-            dlclose(_libraryHandle);
-            _libraryHandle = nullptr;
-        }
-        _running = NO;
     }
 }
 
 - (BOOL)handleEnvironment:(unsigned)command data:(void *)data {
     switch (command) {
+        case LibRetro::GetFrameStopCallback:
+            if (!data) return NO;
+            *static_cast<LibRetro::FrameStopCallback *>(data) = AzaharShouldStop;
+            return YES;
         case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
             if (!data) return NO;
             *(const char **)data = _systemDirectory.UTF8String;
@@ -424,10 +474,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
-    if (!data || width == 0 || height == 0 ||
+    if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || width == 0 || height == 0 ||
         width > 4096 || height > 4096 || pitch < width * 4 ||
         pitch > (4096 * 4) || _frameQueued.exchange(true)) return;
 
+    if (!_receivedFirstVideo) {
+        _receivedFirstVideo = YES;
+        [self reportJITStage:[NSString stringWithFormat:@"First software video buffer: %u x %u", width, height]];
+    }
     NSData *pixels = [NSData dataWithBytes:data length:pitch * height];
     dispatch_async(dispatch_get_main_queue(), ^{
         CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
@@ -437,13 +491,27 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             provider, NULL, false, kCGRenderingIntentDefault);
         if (frame) {
             UIImage *image = [UIImage imageWithCGImage:frame];
-            [self.delegate azaharEmulatorDidRenderImage:image];
+            id<AzaharEmulatorDelegate> delegate = self.delegate;
+            if (delegate && !_stopping.load()) {
+                [delegate azaharEmulatorDidRenderImage:image];
+                if (!_displayedFirstVideo) {
+                    _displayedFirstVideo = YES;
+                    [self reportJITStage:@"First software image delivered to the game view"];
+                }
+            }
             CGImageRelease(frame);
         }
         CGColorSpaceRelease(colors);
         CGDataProviderRelease(provider);
         _frameQueued.store(false);
     });
+}
+
+- (BOOL)shouldStopAfterSlices:(uint64_t)slices {
+    if (_waitingForFirstFrame.load(std::memory_order_relaxed)) {
+        _completedSlices.store(slices, std::memory_order_relaxed);
+    }
+    return _stopping.load();
 }
 
 - (void)stop {

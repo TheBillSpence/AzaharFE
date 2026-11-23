@@ -274,6 +274,7 @@ void ARM_Dynarmic::Run() {
         }
         return;
     }
+    bool trace_budget_stage = false;
     if (probe >= kStepProbeCount) {
         // Run 16 full JIT slices at each tested budget. If a later budget
         // freezes, the last "entered" trace identifies the failing stage.
@@ -289,7 +290,8 @@ void ARM_Dynarmic::Run() {
         if (probe == kStepProbeCount) {
             gAzaharJITFullRunStarted.store(true, std::memory_order_release);
         }
-        if (run_index == 0 || run_index % kRunsPerStage == 0) {
+        trace_budget_stage = stage_number <= kLastStage && run_index % kRunsPerStage == 0;
+        if (trace_budget_stage) {
             char status[200];
             std::snprintf(status, sizeof(status),
                           "JIT27TRACE budget test stage=%u run=%u core=%u pc=0x%08x budget=%llu entered",
@@ -304,15 +306,12 @@ void ARM_Dynarmic::Run() {
     if (probe == kStepProbeCount) {
         LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run returned");
     }
-    if (probe >= kStepProbeCount) {
-        const unsigned run_index = probe - kStepProbeCount;
-        if (run_index == 0 || run_index % 16 == 0) {
-            char status[200];
-            std::snprintf(status, sizeof(status),
-                          "JIT27TRACE budget test run=%u core=%u pc=0x%08x returned",
-                          run_index + 1, GetID(), jit->Regs()[15]);
-            LibRetro::DisplayMessage(status);
-        }
+    if (trace_budget_stage) {
+        char status[200];
+        std::snprintf(status, sizeof(status),
+                      "JIT27TRACE budget test run=%u core=%u pc=0x%08x returned",
+                      probe - kStepProbeCount + 1, GetID(), jit->Regs()[15]);
+        LibRetro::DisplayMessage(status);
     }
 #endif
 }

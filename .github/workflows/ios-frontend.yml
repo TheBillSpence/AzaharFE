@@ -6,7 +6,8 @@ on:
     branches: [ios-jit-experiment]
     paths:
       - 'ios-app/**'
-      - 'src/citra_libretro/core_settings.cpp'
+      - 'src/citra_libretro/**'
+      - 'src/core/arm/dynarmic/**'
       - '.github/workflows/ios-frontend.yml'
 
 permissions:
