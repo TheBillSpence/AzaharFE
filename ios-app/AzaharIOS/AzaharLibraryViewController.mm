@@ -56,8 +56,16 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.view.backgroundColor = AZNavy();
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"] style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
-    self.navigationItem.rightBarButtonItem.accessibilityLabel = @"Session settings";
+    UIBarButtonItem *gear = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"gearshape"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
+    gear.accessibilityLabel = @"Session settings";
+    UIBarButtonItem *stop = [[UIBarButtonItem alloc]
+        initWithTitle:@"Stop" style:UIBarButtonItemStylePlain
+        target:self action:@selector(stopGame)];
+    stop.tintColor = UIColor.systemRedColor;
+    stop.accessibilityLabel = @"Stop game and return to library";
+    self.navigationItem.rightBarButtonItems = @[gear, stop];
     self.screen = [UIImageView new];
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.backgroundColor = UIColor.blackColor;
@@ -188,6 +196,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [nav pushViewController:profile animated:YES];
 }
 - (void)closeSettings { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)stopGame {
+    [self.host stop];
+    [self.navigationController popViewControllerAnimated:YES];
+}
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];

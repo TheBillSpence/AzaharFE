@@ -156,3 +156,14 @@ setting passes the budget to the existing Dynarmic timer callback. The
 The ramp is a diagnostic, NOT an FPS setting. It does not establish a
 reliable maximum until verified on device. Adaptive UI and build
 counter remain in place; stable master remains unchanged.
+
+## Build #25: Azahar-owned cooperative execution control
+
+Studied ARMSX2's iOS VM thread, ARM64 dispatcher event exits, and regression
+harness. Implemented a new AzaharFE-only C ABI bridge to Dynarmic's
+`HaltExecution()` so UI Stop can request a cooperative safe exit from a
+live JIT run. A first-frame watchdog does the same when scheduler progress
+remains unchanged between the 3s and 10s probes. It does not forcibly kill
+a worker, patch active RX code, or switch CPU backend mid-run. We also log
+the JIT return reason on budget-stage traces. See
+`ios-app/IOS-JIT-RUNTIME-PLAN.md` for the staged architecture plan.

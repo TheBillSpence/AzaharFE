@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 #include <mach/mach.h>
 #include <mach/vm_map.h>
@@ -93,6 +94,9 @@ static __weak AzaharEmulator *sCurrentEmulator;
 
 @interface AzaharEmulator () {
     void *_libraryHandle;
+    std::mutex _jitBridgeMutex;
+    void (*_requestJITHalt)(void);
+    std::atomic<uint64_t> _slicesAtThreeSeconds;
     std::atomic<bool> _stopping;
     std::atomic<bool> _frameQueued;
     std::atomic<uint64_t> _buttons;
@@ -129,6 +133,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
 - (void)runGameAtURL:(NSURL *)url;
 - (void)reportJITStage:(NSString *)message;
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices;
+- (void)requestJITHalt;
 @end
 
 static bool AzaharEnvironment(unsigned command, void *data) {
@@ -215,6 +220,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     self = [super init];
     if (!self) return nil;
 
+    _requestJITHalt = nullptr;
+    _slicesAtThreeSeconds.store(0);
     _stopping.store(false);
     _frameQueued.store(false);
     _buttons.store(0);
@@ -266,7 +273,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     LOAD_SYMBOL(_unloadGame, retro_unload_game);
     LOAD_SYMBOL(_runFrame, retro_run);
 #undef LOAD_SYMBOL
-
+    {
+        std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+        _requestJITHalt = reinterpret_cast<void (*)(void)>(
+            dlsym(_libraryHandle, "azahar_jit_request_halt"));
+    }
     return YES;
 }
 
@@ -290,6 +301,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _gameOptions = [options copy];
         _playSession = [NSObject new];
         _completedSlices.store(0);
+        _slicesAtThreeSeconds.store(0);
         _waitingForFirstFrame.store(false);
         _receivedFirstVideo = NO;
         _displayedFirstVideo = NO;
@@ -304,9 +316,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [self runGameAtURL:url];
-        if (_libraryHandle) {
-            dlclose(_libraryHandle);
-            _libraryHandle = nullptr;
+        {
+            // No stop callback may outlive the dynamic library containing it.
+            std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+            _requestJITHalt = nullptr;
+            if (_libraryHandle) {
+                dlclose(_libraryHandle);
+                _libraryHandle = nullptr;
+            }
         }
         @synchronized (self) {
             if (_diagnosticsFile) fclose(_diagnosticsFile);
@@ -330,9 +347,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         AzaharEmulator *host = weakHost;
         if (!host || host->_playSession != session || host->_stopping.load() ||
             !host->_waitingForFirstFrame.load()) return;
+        const uint64_t slices = host->_completedSlices.load();
         [host reportJITStage:[NSString stringWithFormat:
             @"First frame pending after %d s; completed scheduler slices: %llu",
-            seconds, (unsigned long long)host->_completedSlices.load()]];
+            seconds, (unsigned long long)slices]];
+        if (seconds == 3) {
+            host->_slicesAtThreeSeconds.store(slices);
+        } else if (seconds == 10 && slices == host->_slicesAtThreeSeconds.load()) {
+            // UI remains live; the guest CPU has not yielded for 7 seconds.
+            [host reportJITStage:@"JIT27TRACE watchdog: scheduler stalled; request CPU safe-exit"];
+            [host requestJITHalt];
+        }
     });
 }
 
@@ -553,9 +578,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     return _stopping.load();
 }
 
+- (void)requestJITHalt {
+    // Call only the optional C export while it is still in the loaded core.
+    // Dynarmic's halt request is cooperative, not a forced thread kill.
+    std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+    if (_requestJITHalt) _requestJITHalt();
+}
+
 - (void)stop {
     _stopping.store(true);
     _buttons.store(0);
+    [self requestJITHalt];
 }
 
 @end

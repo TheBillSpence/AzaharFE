@@ -7,6 +7,8 @@
 #ifdef IOS
 #include <atomic>
 #include <cstdio>
+#include <mutex>
+#include <unordered_set>
 #include "citra_libretro/environment.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
@@ -44,6 +46,30 @@ static std::atomic<unsigned> gAzaharJITRunCount{0};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
+
+// AzaharFE run registry: active JITs are registered without holding the
+// mutex during generated code. HaltExecution only requests a safe exit.
+static std::mutex gAzaharJITRunMutex;
+static std::unordered_set<Dynarmic::A32::Jit*> gAzaharActiveJITs;
+class AzaharScopedJITRun final {
+public:
+    explicit AzaharScopedJITRun(Dynarmic::A32::Jit* current) : current(current) {
+        std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
+        gAzaharActiveJITs.insert(current);
+    }
+    ~AzaharScopedJITRun() {
+        std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
+        gAzaharActiveJITs.erase(current);
+    }
+    AzaharScopedJITRun(const AzaharScopedJITRun&) = delete;
+    AzaharScopedJITRun& operator=(const AzaharScopedJITRun&) = delete;
+private:
+    Dynarmic::A32::Jit* current;
+};
+void AzaharRequestRunningJITToHalt() {
+    std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
+    for (auto* running : gAzaharActiveJITs) running->HaltExecution();
+}
 #endif
 
 class DynarmicUserCallbacks final : public Dynarmic::A32::UserCallbacks {
@@ -351,7 +377,12 @@ void ARM_Dynarmic::Run() {
         }
     }
 #endif
+#ifdef IOS
+    AzaharScopedJITRun active_jit{jit};
+    const auto jit_halt_reason = jit->Run();
+#else
     jit->Run();
+#endif
 #ifdef IOS
     if (probe == kStepProbeCount) {
         LibRetro::DisplayMessage("JIT27TRACE first full Dynarmic::Run returned");
@@ -359,8 +390,9 @@ void ARM_Dynarmic::Run() {
     if (trace_budget_stage) {
         char status[200];
         std::snprintf(status, sizeof(status),
-                      "JIT27TRACE run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x returned",
-                      probe - kStepProbeCount + 1, GetID(), GetPC(), GetReg(0), GetReg(1));
+                      "JIT27TRACE run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x returned reason=0x%x",
+                      probe - kStepProbeCount + 1, GetID(), GetPC(), GetReg(0), GetReg(1),
+                       static_cast<unsigned>(jit_halt_reason));
         LibRetro::DisplayMessage(status);
     }
 #endif

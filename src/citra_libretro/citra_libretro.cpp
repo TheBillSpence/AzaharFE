@@ -51,6 +51,16 @@
 #include "core/loader/loader.h"
 #include "core/memory.h"
 
+// Experimental AzaharFE safe-exit bridge, independently implemented.
+#ifdef IOS
+namespace Core {
+void AzaharRequestRunningJITToHalt();
+}
+extern "C" __attribute__((visibility("default"))) void azahar_jit_request_halt() {
+    Core::AzaharRequestRunningJITToHalt();
+}
+#endif
+
 #ifdef HAVE_LIBRETRO_VFS
 #include <streams/file_stream_transforms.h>
 #endif
