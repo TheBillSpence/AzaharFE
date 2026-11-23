@@ -26,6 +26,10 @@ bool GetSoftwareFramebuffer(retro_framebuffer* fb, int width, int height);
 /// Calls back to LibRetro to upload a particular video frame.
 /// @see retro_video_refresh_t
 void UploadVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch);
+#ifdef IOS
+bool HasSubmittedSoftwareFrame();
+void ResetSubmittedSoftwareFrame();
+#endif
 
 /// Calls back to LibRetro to poll input.
 /// @see retro_input_poll_t

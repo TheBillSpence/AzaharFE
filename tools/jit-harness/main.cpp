@@ -14,6 +14,7 @@
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/exclusive_monitor.h>
 #include <dynarmic/interface/optimization_flags.h>
+#include "../../src/core/arm/dynarmic/ios_jit_budget.h"
 
 namespace {
 using u8 = std::uint8_t;
@@ -358,6 +359,19 @@ void TestBudgetStress() {
     constexpr std::array<u64, 8> budgets = {1, 65, 256, 1024, 4096, 16384, 65536, 262144};
     for (unsigned pass = 0; pass < 2; ++pass) {
         for (u64 budget : budgets) RunActiveBudget(cpu, env, reference, budget);
+    }
+    // Switch caps on the same active CPU, with scheduler events on either side of each cap.
+    constexpr std::array<int, 10> deadlines = {-1, 0, 1, 255, 256, 257, 16383, 16384, 16385, 375000};
+    constexpr std::array<u64, 10> before_video = {0, 0, 1, 255, 256, 256, 256, 256, 256, 256};
+    constexpr std::array<u64, 10> during_video = {0, 0, 1, 255, 256, 257, 16383, 16384, 16384, 16384};
+    for (bool video_started : {false, true}) {
+        const auto cap = Core::PostStartupJitCap(video_started);
+        const auto& expected = video_started ? during_video : before_video;
+        for (size_t i = 0; i < deadlines.size(); ++i) {
+            const auto budget = Core::LimitJitBudget(deadlines[i], cap);
+            Require(budget == expected[i], "incorrect budget at deadline " + std::to_string(deadlines[i]));
+            if (budget) RunActiveBudget(cpu, env, reference, budget);
+        }
     }
 }
 

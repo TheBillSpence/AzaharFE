@@ -5,11 +5,13 @@
 #include <csignal>
 #include <cstring>
 #ifdef IOS
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <mutex>
-#include <unordered_set>
+#include <vector>
 #include "citra_libretro/environment.h"
+#include "core/arm/dynarmic/ios_jit_budget.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/optimization_flags.h>
@@ -43,6 +45,7 @@ namespace Core {
 // Single-step uses a separate code path and isn't representative here.
 static std::atomic<bool> gAzaharJITFullRunStarted{false};
 static std::atomic<unsigned> gAzaharJITRunCount{0};
+static std::atomic<bool> gAzaharJITStartupProbesComplete{false};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
@@ -50,16 +53,18 @@ static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
 // AzaharFE run registry: active JITs are registered without holding the
 // mutex during generated code. HaltExecution only requests a safe exit.
 static std::mutex gAzaharJITRunMutex;
-static std::unordered_set<Dynarmic::A32::Jit*> gAzaharActiveJITs;
+// At most a handful of CPUs run concurrently. Reuse the registry's storage across slices.
+static std::vector<Dynarmic::A32::Jit*> gAzaharActiveJITs;
 class AzaharScopedJITRun final {
 public:
     explicit AzaharScopedJITRun(Dynarmic::A32::Jit* current) : current(current) {
         std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
-        gAzaharActiveJITs.insert(current);
+        gAzaharActiveJITs.push_back(current);
     }
     ~AzaharScopedJITRun() {
         std::lock_guard<std::mutex> lock(gAzaharJITRunMutex);
-        gAzaharActiveJITs.erase(current);
+        const auto entry = std::find(gAzaharActiveJITs.begin(), gAzaharActiveJITs.end(), current);
+        gAzaharActiveJITs.erase(entry);
     }
     AzaharScopedJITRun(const AzaharScopedJITRun&) = delete;
     AzaharScopedJITRun& operator=(const AzaharScopedJITRun&) = delete;
@@ -269,8 +274,7 @@ public:
             // Adaptive diagnostic: the Run caller ramps the cap only after
             // previous short runs returned successfully. Keep this per-thread
             // so other emulator threads cannot overwrite the active budget.
-            const auto remaining = static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
-            const auto limited = remaining < gAzaharJITBudgetCap ? remaining : gAzaharJITBudgetCap;
+            const auto limited = LimitJitBudget(ticks, gAzaharJITBudgetCap);
             if (remaining_tick_reports < 3) {
                 ++remaining_tick_reports;
                 char info[170];
@@ -310,6 +314,7 @@ ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_,
 #ifdef IOS
     if (core_id_ == 0) {
         gAzaharJITRunCount.store(0, std::memory_order_relaxed);
+        gAzaharJITStartupProbesComplete.store(false, std::memory_order_relaxed);
         gAzaharJITFullRunStarted.store(false, std::memory_order_relaxed);
     }
 #endif
@@ -328,6 +333,14 @@ void ARM_Dynarmic::Run() {
     }
 
 #ifdef IOS
+    AzaharScopedJITRun active_jit{jit};
+    if (gAzaharJITStartupProbesComplete.load(std::memory_order_relaxed)) {
+        // Keep the short slices until video starts. GetTicksRemaining also
+        // limits this run to the scheduler's next event, and SVCs still yield.
+        gAzaharJITBudgetCap = PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame());
+        jit->Run();
+        return;
+    }
     // Build #16: one generated guest instruction returned, while the
     // first full Dynarmic::Run never returned. Step through several
     // hundred guest instructions first to determine whether this is
@@ -337,7 +350,6 @@ void ARM_Dynarmic::Run() {
     const unsigned probe = gAzaharJITRunCount.fetch_add(1, std::memory_order_relaxed);
     const bool trace_probe =
         probe < 4 || probe == 15 || probe == 63 || probe == 255 || probe == kStepProbeCount - 1;
-    AzaharScopedJITRun active_jit{jit};
     if (probe < kStepProbeCount) {
         if (trace_probe) {
             char status[192];
@@ -393,8 +405,9 @@ void ARM_Dynarmic::Run() {
             LibRetro::DisplayMessage(message);
         }
         if (n + 1 == kTargetStepCount) {
+            gAzaharJITStartupProbesComplete.store(true, std::memory_order_relaxed);
             LibRetro::DisplayMessage(
-                "JIT27TRACE run80 probe completed; resuming 256-tick JIT slices");
+                "JIT27TRACE run80 probe completed; gameplay budget after first software frame");
         }
         return;
     }
@@ -402,7 +415,6 @@ void ARM_Dynarmic::Run() {
     if (probe >= kStepProbeCount) {
         // Run 16 full JIT slices at each tested budget. If a later budget
         // freezes, the last "entered" trace identifies the failing stage.
-        // This is NOT a final FPS optimization: full ~375k ticks stays off.
         constexpr std::uint64_t kBudgets[] = {64, 256, 1024, 4096, 16384, 65536, 262144};
         constexpr unsigned kRunsPerStage = 16;
         const unsigned run_index = probe - kStepProbeCount;
@@ -415,11 +427,8 @@ void ARM_Dynarmic::Run() {
         }
         // Sample every run in the 16K stage: the previous black screen was
         // observed between its first return and the next stage marker.
-        trace_budget_stage = (stage_number <= kLastStage &&
-                              (run_index % kRunsPerStage == 0 || gAzaharJITBudgetCap == 16384)) ||
-                             (probe >= kTargetRun + kTargetStepCount &&
-                              (probe == kTargetRun + kTargetStepCount ||
-                               (probe - kTargetRun - kTargetStepCount) % 128 == 0));
+        trace_budget_stage = stage_number <= kLastStage &&
+                             (run_index % kRunsPerStage == 0 || gAzaharJITBudgetCap == 16384);
         if (trace_budget_stage) {
             char status[200];
             std::snprintf(status, sizeof(status),

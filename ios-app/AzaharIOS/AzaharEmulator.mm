@@ -107,7 +107,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
     std::atomic<bool> _waitingForFirstFrame;
     NSObject *_playSession;
     BOOL _receivedFirstVideo;
-    BOOL _displayedFirstVideo;
+    std::atomic<uint64_t> _deliveredImages;
     FILE *_diagnosticsFile;
     NSString *_systemDirectory;
     NSString *_saveDirectory;
@@ -191,6 +191,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 // Persist each stage before risky JIT debugger operations, because a stalled
 // breakpoint may stop every process thread before a UI message can repaint.
+- (void)writeDiagnostic:(NSString *)message {
+    NSLog(@"Azahar JIT27: %@", message);
+    @synchronized (self) {
+        if (_diagnosticsFile) {
+            fprintf(_diagnosticsFile, "%.3f %s\n", NSDate.date.timeIntervalSince1970,
+                    message.UTF8String);
+            fflush(_diagnosticsFile);
+        }
+    }
+}
+
 - (void)reportJITStage:(NSString *)message {
     BOOL changed = NO;
     if ([message containsString:@"JIT27TRACE step 1/512"] && [message hasSuffix:@"returned"]) {
@@ -202,14 +213,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (changed) dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:@"AzaharSessionStatusChanged" object:nil];
     });
-    NSLog(@"Azahar JIT27: %@", message);
-    @synchronized (self) {
-        if (_diagnosticsFile) {
-            fprintf(_diagnosticsFile, "%.3f %s\n", NSDate.date.timeIntervalSince1970,
-                    message.UTF8String);
-            fflush(_diagnosticsFile);
-        }
-    }
+    [self writeDiagnostic:message];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.delegate azaharEmulatorDidChangeJITStatus:message];
     });
@@ -296,7 +300,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _completedSlices.store(0);
         _waitingForFirstFrame.store(false);
         _receivedFirstVideo = NO;
-        _displayedFirstVideo = NO;
+        _deliveredImages.store(0, std::memory_order_relaxed);
         @synchronized (self) { _lastMessage = nil; }
         _jitEnabled = NO;
         NSString *path = [[_saveDirectory stringByDeletingLastPathComponent]
@@ -438,6 +442,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             auto nextFrame = std::chrono::steady_clock::now();
             auto fpsWindow = nextFrame;
             unsigned frameCount = 0;
+            auto performanceWindow = nextFrame;
+            unsigned emulatedFrames = 0;
+            uint64_t previousImages = 0;
             bool firstFrame = true;
             if (_jitEnabled) {
                 _waitingForFirstFrame.store(true);
@@ -449,11 +456,25 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 }
                 if (_stopping.load()) break;
                 ++frameCount;
+                auto now = std::chrono::steady_clock::now();
                 if (firstFrame && _receivedFirstVideo) {
                     firstFrame = false;
+                    performanceWindow = now;
+                    previousImages = _deliveredImages.load(std::memory_order_relaxed);
                     [self reportJITStage:@"7/7 First software frame received; measuring FPS"];
+                } else if (!firstFrame) {
+                    ++emulatedFrames;
+                    const double seconds = std::chrono::duration<double>(now - performanceWindow).count();
+                    if (seconds >= 5.0) {
+                        const auto images = _deliveredImages.load(std::memory_order_relaxed);
+                        [self writeDiagnostic:[NSString stringWithFormat:
+                            @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs",
+                            emulatedFrames / seconds, (images - previousImages) / seconds, seconds]];
+                        performanceWindow = now;
+                        emulatedFrames = 0;
+                        previousImages = images;
+                    }
                 }
-                auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
                 if (elapsed >= 1.0) {
                     if (_receivedFirstVideo) {
@@ -579,8 +600,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             id<AzaharEmulatorDelegate> delegate = self.delegate;
             if (delegate && !_stopping.load()) {
                 [delegate azaharEmulatorDidRenderImage:image];
-                if (!_displayedFirstVideo) {
-                    _displayedFirstVideo = YES;
+                if (_deliveredImages.fetch_add(1, std::memory_order_relaxed) == 0) {
                     [self reportJITStage:@"First software image delivered to the game view"];
                 }
             }

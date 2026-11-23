@@ -432,6 +432,9 @@ static void setup_memory_maps() {
 }
 
 static bool do_load_game() {
+#ifdef IOS
+    LibRetro::ResetSubmittedSoftwareFrame();
+#endif
     const Core::System::ResultStatus load_result{
         Core::System::GetInstance().Load(*emu_instance->emu_window, LibRetro::settings.file_path)};
 

@@ -2,6 +2,7 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <atomic>
 #include <cstring>
 
 #include "audio_core/audio_types.h"
@@ -23,6 +24,9 @@ namespace LibRetro {
 namespace {
 
 static retro_video_refresh_t video_cb;
+#ifdef IOS
+static std::atomic<bool> submitted_software_frame{false};
+#endif
 static retro_audio_sample_batch_t audio_batch_cb;
 static retro_environment_t environ_cb;
 static retro_input_poll_t input_poll_cb;
@@ -43,8 +47,23 @@ bool GetSoftwareFramebuffer(retro_framebuffer* fb, int width, int height) {
 }
 
 void UploadVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch) {
-    return video_cb(data, width, height, pitch);
+    video_cb(data, width, height, pitch);
+#ifdef IOS
+    if (data && data != RETRO_HW_FRAME_BUFFER_VALID && width && height && pitch) {
+        submitted_software_frame.store(true, std::memory_order_relaxed);
+    }
+#endif
 }
+
+#ifdef IOS
+bool HasSubmittedSoftwareFrame() {
+    return submitted_software_frame.load(std::memory_order_relaxed);
+}
+
+void ResetSubmittedSoftwareFrame() {
+    submitted_software_frame.store(false, std::memory_order_relaxed);
+}
+#endif
 
 bool SetHWSharedContext() {
     return environ_cb(RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT, NULL);
