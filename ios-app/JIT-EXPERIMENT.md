@@ -250,3 +250,28 @@ same, plus the guest mapped-RAM page table. Default `fast` is unchanged and
 retains the prior startup workaround. New ARM64 host regression tests cover
 both modes, including mapped page-table guest RAM parity. On-device benchmarks
 are required, especially for the direct-memory mode; back up saved games.
+
+## CPU/GPU/HLE profiling and non-Metal speed work
+
+The iOS frontend now offers a per-game/global **Detailed CPU/GPU profiling**
+toggle (OFF by default). When enabled, `PERF27` logs every ~5 seconds include
+cumulative milliseconds across CPU execution, Dynarmic JIT, 3DS kernel SVC,
+PICA command lists, software rasterization, framebuffer conversion, DSP mixing
+and audio output, plus memory callback counts on the emulation thread. These
+are **overlapping/inclusive measurements**; PICA/triangle work and SVC/JIT work
+can nest, and worker-thread CPU sums can exceed elapsed wall time. Do not add
+them to determine a percentage. The existing frontend `retro_run` timing
+is the overall per-frame wall-clock measurement. Profiling changes timing and
+must be OFF for fair performance comparisons.
+
+The iOS-only software renderer avoids decoding the identical top framebuffer
+twice: left eye is decoded once and the independent right-eye pixel vector
+is copied. The libretro software output reuses a thread-local staging pixel
+buffer instead of calloc/free each frame, with no change to its pixel format.
+Software graphics worker count can be Automatic (current behavior), 2, 4, or
+6 for controlled comparisons on the A13; restart the game to apply it.
+
+The precompiled atomic host spinlock fix, working JIT memory mapping, cycle
+accounting and compatibility fallback are untouched. No Metal/Vulkan was
+enabled. Timing reports help find whether further JIT, software raster,
+DSP or HLE optimizations are warranted; no speedup is assumed without tests.

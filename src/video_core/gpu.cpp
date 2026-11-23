@@ -5,6 +5,9 @@
 #include "common/archives.h"
 #include "common/hacks/hack_manager.h"
 #include "common/microprofile.h"
+#ifdef IOS
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
@@ -485,6 +488,9 @@ void GPU::SubmitCmdList(u32 index) {
         return;
     }
 
+#ifdef IOS
+    AzaharProfile::Scope pica_profile{AzaharProfile::Section::PicaCommands};
+#endif
     impl->pica.ProcessCmdList(addr, size,
                               !right_eye_disabler->ShouldAllowCmdQueueTrigger(addr, size));
     config.trigger[index] = 0;

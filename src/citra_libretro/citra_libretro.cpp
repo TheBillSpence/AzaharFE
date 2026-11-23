@@ -32,6 +32,11 @@
 #include "citra_libretro/core_settings.h"
 #include "citra_libretro/environment.h"
 #include "citra_libretro/input/input_factory.h"
+#ifdef IOS
+#include <chrono>
+#include <cstdio>
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 
 #include "common/arch.h"
 #if CITRA_ARCH(x86_64)
@@ -80,6 +85,10 @@ public:
 };
 
 CitraLibRetro* emu_instance;
+#ifdef IOS
+static AzaharProfile::Clock::time_point gAzaharProfileWindow;
+static bool gAzaharBenchPending = false;
+#endif
 
 void retro_init() {
     emu_instance = new CitraLibRetro();
@@ -366,6 +375,33 @@ void retro_run() {
     if (trace_jit_first_frame) {
         LibRetro::DisplayMessage("JIT27TRACE video frame submitted");
     }
+    if (AzaharProfile::Enabled()) {
+        const auto now = AzaharProfile::Clock::now();
+        const double seconds = std::chrono::duration<double>(now - gAzaharProfileWindow).count();
+        if (seconds >= 5.0) {
+            const auto stats = AzaharProfile::TakeSnapshot();
+            using S = AzaharProfile::Section;
+            char report[256];
+            std::snprintf(report, sizeof(report),
+                          "PERF27 %.1fs CPU %.1fms JIT %.1fms SVC %.1fms PICA %.1fms "
+                          "triangles %.1fms decode %.1fms",
+                          seconds, stats.Milliseconds(S::CoreExecution),
+                          stats.Milliseconds(S::DynarmicJIT),
+                          stats.Milliseconds(S::KernelSVC),
+                          stats.Milliseconds(S::PicaCommands),
+                          stats.Milliseconds(S::SoftwareTriangles),
+                          stats.Milliseconds(S::ScreenDecode));
+            LibRetro::DisplayMessage(report);
+            std::snprintf(report, sizeof(report),
+                          "PERF27 audio DSP %.1fms sink %.1fms; JIT guest RAM callbacks "
+                          "read=%llu write=%llu (per core thread)",
+                          stats.Milliseconds(S::DSPMix), stats.Milliseconds(S::AudioOutput),
+                          static_cast<unsigned long long>(stats.reads),
+                          static_cast<unsigned long long>(stats.writes));
+            LibRetro::DisplayMessage(report);
+            gAzaharProfileWindow = now;
+        }
+    }
 #endif
 }
 
@@ -434,6 +470,9 @@ static void setup_memory_maps() {
 static bool do_load_game() {
 #ifdef IOS
     LibRetro::ResetSubmittedSoftwareFrame();
+    AzaharProfile::Configure(LibRetro::FetchVariable("AzaharDeepProfile", "off") == "on");
+    gAzaharProfileWindow = AzaharProfile::Clock::now();
+    gAzaharBenchPending = AzaharProfile::Enabled() && LibRetro::CanUseJIT();
 #endif
     const Core::System::ResultStatus load_result{
         Core::System::GetInstance().Load(*emu_instance->emu_window, LibRetro::settings.file_path)};

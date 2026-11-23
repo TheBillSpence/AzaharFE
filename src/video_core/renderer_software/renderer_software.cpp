@@ -3,6 +3,9 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include "common/color.h"
+#ifdef IOS
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "core/core.h"
 #include "video_core/gpu.h"
 #include "video_core/pica/pica_core.h"
@@ -25,13 +28,25 @@ void RendererSoftware::SwapBuffers() {
 }
 
 void RendererSoftware::PrepareRenderTarget() {
+#ifdef IOS
+    AzaharProfile::Scope decode_profile{AzaharProfile::Section::ScreenDecode};
+#endif
     const auto& regs_lcd = pica.regs_lcd;
+#ifdef IOS
+    // Both top-eye buffers currently use the same PICA framebuffer and
+    // top color fill. Decode once, copy pixels for the second eye, and
+    // preserve independent storage for the existing layout consumers.
+    LoadFBToScreenInfo(0, regs_lcd.color_fill_top);
+    screen_infos[1] = screen_infos[0];
+    LoadFBToScreenInfo(2, regs_lcd.color_fill_bottom);
+#else
     for (u32 i = 0; i < 3; i++) {
         const u32 fb_id = i == 2 ? 1 : 0;
 
         const auto color_fill = fb_id == 0 ? regs_lcd.color_fill_top : regs_lcd.color_fill_bottom;
         LoadFBToScreenInfo(i, color_fill);
     }
+#endif
 }
 
 void RendererSoftware::LoadFBToScreenInfo(int i, const Pica::ColorFill& color_fill) {

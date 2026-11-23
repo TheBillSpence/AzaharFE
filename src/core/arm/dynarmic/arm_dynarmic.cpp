@@ -13,6 +13,7 @@
 #include "citra_libretro/environment.h"
 #include "core/arm/dynarmic/ios_jit_budget.h"
 #include "core/arm/dynarmic/ios_jit_optimizations.h"
+#include "citra_libretro/ios_perf_profile.h"
 #endif
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/optimization_flags.h>
@@ -117,28 +118,60 @@ public:
     }
 
     std::uint8_t MemoryRead8(VAddr vaddr) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_reads;
+#endif
         return memory.Read8(vaddr);
     }
     std::uint16_t MemoryRead16(VAddr vaddr) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_reads;
+#endif
         return memory.Read16(vaddr);
     }
     std::uint32_t MemoryRead32(VAddr vaddr) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_reads;
+#endif
         return memory.Read32(vaddr);
     }
     std::uint64_t MemoryRead64(VAddr vaddr) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_reads;
+#endif
         return memory.Read64(vaddr);
     }
 
     void MemoryWrite8(VAddr vaddr, std::uint8_t value) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_writes;
+#endif
         memory.Write8(vaddr, value);
     }
     void MemoryWrite16(VAddr vaddr, std::uint16_t value) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_writes;
+#endif
         memory.Write16(vaddr, value);
     }
     void MemoryWrite32(VAddr vaddr, std::uint32_t value) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_writes;
+#endif
         memory.Write32(vaddr, value);
     }
     void MemoryWrite64(VAddr vaddr, std::uint64_t value) override {
+#ifdef IOS
+        if (AzaharProfile::Enabled())
+            ++AzaharProfile::guest_writes;
+#endif
         memory.Write64(vaddr, value);
     }
 
@@ -172,7 +205,14 @@ public:
             LibRetro::DisplayMessage(message);
         }
 #endif
+#ifdef IOS
+        {
+            AzaharProfile::Scope svc_profile{AzaharProfile::Section::KernelSVC};
+            svc_context.CallSVC(swi);
+        }
+#else
         svc_context.CallSVC(swi);
+#endif
 #ifdef IOS
         // A32's SVC terminal saves the next PC before invoking the callback
         // and checks for a halt afterwards. Yield to CoreTiming at this kernel
@@ -335,6 +375,9 @@ MICROPROFILE_DEFINE(ARM_Jit, "ARM JIT", "ARM JIT", MP_RGB(255, 64, 64));
 void ARM_Dynarmic::Run() {
     ASSERT(memory.GetCurrentPageTable() == current_page_table);
     MICROPROFILE_SCOPE(ARM_Jit);
+#ifdef IOS
+    AzaharProfile::Scope jit_profile{AzaharProfile::Section::DynarmicJIT};
+#endif
     if (break_flag) [[unlikely]] {
         return;
     }
@@ -344,8 +387,7 @@ void ARM_Dynarmic::Run() {
     if (gAzaharJITTurboStartup.load(std::memory_order_relaxed)) {
         // Experimental direct startup: maintain timer limits and the JIT halt
         // bridge. Only the obsolete instruction-by-instruction probes are skipped.
-        const bool first_run =
-            !gAzaharJITFullRunStarted.exchange(true, std::memory_order_relaxed);
+        const bool first_run = !gAzaharJITFullRunStarted.exchange(true, std::memory_order_relaxed);
         gAzaharJITBudgetCap = PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame(), true);
         if (first_run)
             LibRetro::DisplayMessage("JIT27TRACE turbo first full Run entered");
@@ -485,6 +527,9 @@ void ARM_Dynarmic::Run() {
 }
 
 void ARM_Dynarmic::Step() {
+#ifdef IOS
+    AzaharProfile::Scope jit_profile{AzaharProfile::Section::DynarmicJIT};
+#endif
     if (break_flag) [[unlikely]] {
         return;
     }

@@ -13,6 +13,9 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/tar_file.h"
+#ifdef IOS
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "core/arm/arm_interface.h"
 #include "core/arm/exclusive_monitor.h"
 #include "core/hle/service/am/am.h"
@@ -96,6 +99,9 @@ System::~System() = default;
  * set, a single instruction otherwise, or a single instruction if a debugger asked to step it.
  */
 static void ExecuteCore(ARM_Interface& core, Kernel::Thread* thread, bool tight_loop) {
+#ifdef IOS
+    AzaharProfile::Scope core_profile{AzaharProfile::Section::CoreExecution};
+#endif
 #ifdef ENABLE_GDBSTUB
     if (thread->gdb_single_step) [[unlikely]] {
         // Keep a reference to the thread in case it just exits.

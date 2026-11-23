@@ -25,6 +25,9 @@
 #include "common/hash.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
+#ifdef IOS
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "core/core.h"
 #include "core/core_timing.h"
 
@@ -467,6 +470,9 @@ StereoFrame16 DspHle::Impl::GenerateCurrentFrame() {
 }
 
 bool DspHle::Impl::Tick() {
+#ifdef IOS
+    AzaharProfile::Scope dsp_profile{AzaharProfile::Section::DSPMix};
+#endif
     bool is_on = GetDspState() == DspState::On;
 
     if (is_on) {

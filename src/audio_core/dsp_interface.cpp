@@ -11,6 +11,9 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
+#ifdef IOS
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "core/core.h"
 #include "core/dumping/backend.h"
 
@@ -142,6 +145,9 @@ void DspInterface::DrainFifoBacklog(std::size_t num_frames) {
 }
 
 void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
+#ifdef IOS
+    AzaharProfile::Scope audio_profile{AzaharProfile::Section::AudioOutput};
+#endif
     // Determine if we should stretch based on the current emulation speed.
     // TODO: Only activate audio stretching when emulation speed goes below 95% threshold
     //       (see #2487) -OS

@@ -4,6 +4,10 @@
 
 #include <boost/container/static_vector.hpp>
 #include "common/logging/log.h"
+#ifdef IOS
+#include "citra_libretro/environment.h"
+#include "citra_libretro/ios_perf_profile.h"
+#endif
 #include "common/microprofile.h"
 #include "common/quaternion.h"
 #include "common/vector_math.h"
@@ -100,9 +104,26 @@ private:
 
 } // Anonymous namespace
 
+#ifdef IOS
+static unsigned IOSSoftwareWorkers() {
+    const auto preference = LibRetro::FetchVariable("AzaharSoftwareThreads", "auto");
+    if (preference == "2")
+        return 2;
+    if (preference == "4")
+        return 4;
+    if (preference == "6")
+        return 6;
+    return std::max(std::thread::hardware_concurrency(), 2U);
+}
+#endif
+
 RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::PicaCore& pica_)
     : memory{memory_}, pica{pica_}, regs{pica.regs.internal},
+#ifdef IOS
+      num_sw_threads{IOSSoftwareWorkers()},
+#else
       num_sw_threads{std::max(std::thread::hardware_concurrency(), 2U)},
+#endif
       sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {}
 
 void RasterizerSoftware::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
@@ -230,6 +251,9 @@ void RasterizerSoftware::MakeScreenCoords(Vertex& vtx) {
 void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                                          bool reversed) {
     MICROPROFILE_SCOPE(GPU_Rasterization);
+#ifdef IOS
+    AzaharProfile::Scope triangle_profile{AzaharProfile::Section::SoftwareTriangles};
+#endif
 
     // Vertex positions in rasterizer coordinates
     static auto screen_to_rasterizer_coords = [](const Common::Vec3<f24>& vec) {

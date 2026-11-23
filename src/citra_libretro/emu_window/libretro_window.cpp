@@ -6,6 +6,7 @@
 #include <glad/glad.h>
 #endif
 #include <libretro.h>
+#include <vector>
 
 #ifdef IOS
 #include <chrono>
@@ -106,14 +107,16 @@ void EmuWindow_LibRetro::SwapBuffers() {
         retro_framebuffer fb;
         u8* data;
         size_t pitch;
-        bool did_malloc = false;
+        // The frontend copies pixels synchronously. Reuse a staging buffer
+        // rather than allocating and freeing a full image every frame.
         if (LibRetro::GetSoftwareFramebuffer(&fb, width, height)) {
             data = static_cast<u8*>(fb.data);
             pitch = fb.pitch;
         } else {
             pitch = static_cast<size_t>(width) * 4;
-            data = static_cast<u8*>(calloc(1, pitch * height));
-            did_malloc = true;
+            static thread_local std::vector<u8> staging_pixels;
+            staging_pixels.resize(pitch * height);
+            data = staging_pixels.data();
         }
 
         std::memset(data, 0, pitch * height);
@@ -177,9 +180,7 @@ void EmuWindow_LibRetro::SwapBuffers() {
 
         LibRetro::UploadVideoFrame(data, static_cast<unsigned>(width),
                                    static_cast<unsigned>(height), pitch);
-        if (did_malloc)
-            free(data);
-#ifdef IOS
+ #ifdef IOS
         // Sample at most once per five seconds. This avoids expensive logging
         // in the software rasterizer's hottest per-pixel loop.
         static auto sample_started = std::chrono::steady_clock::now();
