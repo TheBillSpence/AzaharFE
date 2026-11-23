@@ -653,8 +653,7 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // the existing MemorySystem callbacks, including exclusive accesses.
     char optimization_status[128];
     std::snprintf(optimization_status, sizeof(optimization_status),
-                  "JIT27TRACE JIT optimization mode=%s; guest memory callbacks",
-                  jit_mode.c_str());
+                  "JIT27TRACE JIT optimization mode=%s; guest memory callbacks", jit_mode.c_str());
     LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {
