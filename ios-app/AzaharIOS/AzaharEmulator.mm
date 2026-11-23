@@ -351,8 +351,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)scheduleFirstFrameCheckAfter:(int)seconds {
     NSObject *session = _playSession;
     __weak AzaharEmulator *weakHost = self;
+    // A busy main queue delayed both watchdog callbacks by ~11 seconds on
+    // device. Poll on a utility queue; reportJITStage dispatches UI changes
+    // back to the main queue and persists the trace under its own lock.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * (int64_t)NSEC_PER_SEC),
-                   dispatch_get_main_queue(), ^{
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         AzaharEmulator *host = weakHost;
         if (!host || host->_playSession != session || host->_stopping.load() ||
             !host->_waitingForFirstFrame.load()) return;
@@ -440,20 +443,21 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 }
                 if (_stopping.load()) break;
                 ++frameCount;
-                if (firstFrame) {
-                    _waitingForFirstFrame.store(false);
+                if (firstFrame && _receivedFirstVideo) {
                     firstFrame = false;
-                    [self reportJITStage:@"7/7 First frame returned; measuring FPS"];
+                    [self reportJITStage:@"7/7 First software frame received; measuring FPS"];
                 }
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
                 if (elapsed >= 1.0) {
-                    double fps = frameCount / elapsed;
-                    BOOL usedJITCandidate = _jitEnabled;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.delegate azaharEmulatorDidMeasureFPS:fps
-                                                        jitActive:usedJITCandidate];
-                    });
+                    if (_receivedFirstVideo) {
+                        double fps = frameCount / elapsed;
+                        BOOL usedJITCandidate = _jitEnabled;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [self.delegate azaharEmulatorDidMeasureFPS:fps
+                                                            jitActive:usedJITCandidate];
+                        });
+                    }
                     fpsWindow = now;
                     frameCount = 0;
                 }
@@ -553,6 +557,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
     if (!_receivedFirstVideo) {
         _receivedFirstVideo = YES;
+        // A returned retro_run() alone does not prove a video buffer arrived.
+        _waitingForFirstFrame.store(false);
         [self reportJITStage:[NSString stringWithFormat:@"First software video buffer: %u x %u", width, height]];
     }
     NSData *pixels = [NSData dataWithBytes:data length:pitch * height];
