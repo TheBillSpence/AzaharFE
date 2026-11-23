@@ -147,7 +147,7 @@ jobs:
             -DENABLE_OPENGL=OFF \
             -DENABLE_VULKAN=OFF \
             -DENABLE_SOFTWARE_RENDERER=ON \
-            -DENABLE_LTO=OFF \
+            -DENABLE_LTO=ON \
             -DENABLE_OPT=OFF \
             -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
             -DCITRA_WARNINGS_AS_ERRORS=OFF

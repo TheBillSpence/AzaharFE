@@ -220,3 +220,23 @@ rendering detail without a hardware renderer (such as a future Vulkan/Metal
 backend). It does increase frame memory, copies, and CPU compositing work.
 For best performance, use 1×. In Large and small screen layout, iOS software
 output also respects 1×–3× instead of silently forcing a 4× framebuffer.
+
+## Build #45: fast JIT by default (iPhone performance experiment)
+
+Fast Dispatch is now the default for new/unconfigured game profiles. It
+restores Dynarmic block linking, return-stack buffering, and fast dispatch.
+Existing explicit global/per-game compatibility settings remain respected.
+The post-startup JIT budget is increased to **4,096 guest ticks before video**
+and **262,144 guest ticks after video** for Fast Dispatch, still bounded by
+CoreTiming's next event and with HaltExecution available. Compatibility retains
+256 / 16,384 ticks, the existing tested behavior. The iOS Release workflow
+requests **LTO** when supported, retaining the existing software renderer and
+16 MiB JIT cache size.
+
+Crucially, the 512-step / run-80 startup safety workarounds are retained
+because earlier direct full runs hung on device. They are startup-only and
+removing them risks breaking boot rather than improving steady gameplay.
+Likewise, the direct guest page table remains disabled until device-verified.
+This is a performance experiment, not an assurance of higher FPS: software
+graphics still lacks Metal acceleration. Benchmark with the same game at
+1× output resolution; compare 5-second FPS and frame/output timings.

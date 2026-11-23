@@ -47,6 +47,8 @@ namespace Core {
 static std::atomic<bool> gAzaharJITFullRunStarted{false};
 static std::atomic<unsigned> gAzaharJITRunCount{0};
 static std::atomic<bool> gAzaharJITStartupProbesComplete{false};
+// Set once when creating the core's JITs; read without allocating on hot runs.
+static std::atomic<bool> gAzaharJITFastDispatch{false};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
@@ -316,6 +318,7 @@ ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_,
     if (core_id_ == 0) {
         gAzaharJITRunCount.store(0, std::memory_order_relaxed);
         gAzaharJITStartupProbesComplete.store(false, std::memory_order_relaxed);
+        gAzaharJITFastDispatch.store(false, std::memory_order_relaxed);
         gAzaharJITFullRunStarted.store(false, std::memory_order_relaxed);
     }
 #endif
@@ -336,9 +339,12 @@ void ARM_Dynarmic::Run() {
 #ifdef IOS
     AzaharScopedJITRun active_jit{jit};
     if (gAzaharJITStartupProbesComplete.load(std::memory_order_relaxed)) {
-        // Keep the short slices until video starts. GetTicksRemaining also
-        // limits this run to the scheduler's next event, and SVCs still yield.
-        gAzaharJITBudgetCap = PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame());
+        // After the proven startup workaround, use longer native JIT runs in
+        // Fast Dispatch mode. Keep cycle counting and safe-exit requests active.
+        // GetTicksRemaining still respects the scheduler's next event.
+        gAzaharJITBudgetCap = PostStartupJitCap(
+            LibRetro::HasSubmittedSoftwareFrame(),
+            gAzaharJITFastDispatch.load(std::memory_order_relaxed));
         jit->Run();
         return;
     }
@@ -643,9 +649,10 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Disable direct block linking, return-stack prediction and fast dispatch
     // temporarily to force execution through the dispatcher, which checks the
     // cycle budget. Keep other safe IR optimizations and cycle counting on.
-    // Opt-in speed presets are selected per game at launch; compatibility stays
-    // the default so known-good iPhone JIT execution remains available.
-    const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "safe");
+    // Use upstream Dynarmic dispatch optimizations by default. An explicit
+    // compatibility or linked preset is still available per game if needed.
+    const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "fast");
+    gAzaharJITFastDispatch.store(jit_mode == "fast", std::memory_order_relaxed);
     config.optimizations = SelectIOSJitOptimizations(config.optimizations, jit_mode);
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct

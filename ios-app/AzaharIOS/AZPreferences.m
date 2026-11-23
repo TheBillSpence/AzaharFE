@@ -20,15 +20,17 @@ NSString *AZOptionTitle(NSString *key) {
 }
 NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharExperimentalJIT"]) return @[@"off", @"on"];
-    if ([key isEqual:@"AzaharJITSpeed"]) return @[@"safe", @"linked", @"fast"];
+    // Fast Dispatch is the default for Build #45; an explicit compatibility
+    // selection, including any per-game override, is still respected.
+    if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"linked", @"safe"];
     if ([key isEqual:@"citra_resolution_factor"]) return @[@"1", @"2", @"3", @"4"];
     if ([key isEqual:@"citra_layout_option"]) return @[@"default", @"single_screen", @"large_screen", @"side_by_side"];
     return @[@"Top", @"Bottom"];
 }
 NSString *AZChoiceTitle(NSString *v) {
     return @{@"on":@"On", @"off":@"Off",
-             @"safe":@"Compatibility (current)", @"linked":@"Linked blocks (test)",
-             @"fast":@"Fast dispatch (test)",
+             @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
+             @"fast":@"Fast dispatch (default)",
              @"1":@"1× Native (400×240)", @"2":@"2× (800×480)",
              @"3":@"3× (1200×720)", @"4":@"4× (1600×960)",
              @"default":@"Top and bottom", @"single_screen":@"Single screen",

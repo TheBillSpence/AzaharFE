@@ -46,10 +46,17 @@ path. Rendering the first game frame still requires a device test.
 ## Optional iPhone JIT speed presets
 
 Under Settings > JIT performance mode, choose:
-- **Compatibility (current)**: the proven iPhone JIT settings, and the default.
+- **Compatibility (fallback)**: the proven original iPhone JIT settings, available
+  as the explicit fallback.
 - **Linked blocks (test)**: restores block linking, while leaving fast dispatch and
   return-stack prediction disabled.
-- **Fast dispatch (test)**: restores all three upstream dispatch optimizations.
+- **Fast dispatch (default in Build #45)**: restores all three upstream dispatch
+  optimizations and uses longer scheduler-capped runs (4,096 ticks before video,
+  262,144 ticks after the first submitted software frame).
+
+The iOS release build now requests LTO, if available from AppleClang, to
+optimize cross-translation-unit code. The known-good 512-step and run-80
+startup workarounds, SVC rescheduling, and memory callbacks remain in place.
 
 This setting is captured on game launch; restart a game to apply it. If a
 mode stalls or crashes, reopen the game in Compatibility. Benchmark with the

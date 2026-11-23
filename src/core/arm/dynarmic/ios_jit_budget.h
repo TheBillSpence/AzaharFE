@@ -8,7 +8,14 @@
 
 namespace Core {
 
-constexpr std::uint64_t PostStartupJitCap(bool submitted_software_frame) {
+// Preserve short, proven scheduler slices for compatibility mode, but let
+// Fast Dispatch execute longer native ARM64 blocks to reduce return overhead.
+// The core timer's next event and cooperative JIT HaltExecution still apply.
+constexpr std::uint64_t PostStartupJitCap(bool submitted_software_frame,
+                                          bool fast_dispatch = false) {
+    if (fast_dispatch) {
+        return submitted_software_frame ? 262144 : 4096;
+    }
     return submitted_software_frame ? 16384 : 256;
 }
 

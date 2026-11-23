@@ -361,6 +361,18 @@ void TestBudgetStress() {
     for (unsigned pass = 0; pass < 2; ++pass) {
         for (u64 budget : budgets) RunActiveBudget(cpu, env, reference, budget);
     }
+    // Build #45's fast mode keeps scheduler limits but raises the gameplay
+    // cap to reduce JIT dispatch returns. Validate both cap calculations and
+    // actual uninterrupted generated ARM64 execution up to the new limit.
+    Require(Core::PostStartupJitCap(false, true) == 4096,
+            "fast mode pre-video cap changed unexpectedly");
+    Require(Core::PostStartupJitCap(true, true) == 262144,
+            "fast mode post-video cap changed unexpectedly");
+    Require(Core::LimitJitBudget(300000, Core::PostStartupJitCap(true, true)) == 262144,
+            "fast mode did not cap a large scheduler deadline");
+    for (u64 requested : {u64{4096}, u64{65536}, u64{262144}}) {
+        RunActiveBudget(cpu, env, reference, requested);
+    }
     // Switch caps on the same active CPU, with scheduler events on either side of each cap.
     constexpr std::array<int, 10> deadlines = {-1, 0, 1, 255, 256, 257, 16383, 16384, 16385, 375000};
     constexpr std::array<u64, 10> before_video = {0, 0, 1, 255, 256, 256, 256, 256, 256, 256};
@@ -414,6 +426,10 @@ void TestOptimizationMode(const std::string& mode) {
     for (u64 budget : {u64{1}, u64{65}, u64{256}, u64{1024}, u64{4096},
                        u64{16384}}) {
         RunActiveBudget(cpu, env, reference, budget);
+    }
+    if (mode == "fast") {
+        // Stress the same high budget selected for on-device Fast Dispatch.
+        RunActiveBudget(cpu, env, reference, Core::PostStartupJitCap(true, true));
     }
     for (unsigned i = 0; i < 16; ++i) {
         env.ticks_left = 1;
