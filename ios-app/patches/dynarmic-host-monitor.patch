@@ -1,0 +1,73 @@
+--- a/src/dynarmic/common/spin_lock_arm64.cpp
++++ b/src/dynarmic/common/spin_lock_arm64.cpp
+@@ -3,9 +3,8 @@
+  * SPDX-License-Identifier: 0BSD
+  */
+ 
+-#include <mutex>
++#include <thread>
+ 
+-#include <oaknut/code_block.hpp>
+ #include <oaknut/oaknut.hpp>
+ 
+ #include "dynarmic/backend/arm64/abi.h"
+@@ -35,52 +34,17 @@
+     code.STLR(WZR, ptr);
+ }
+ 
+-namespace {
+-
+-struct SpinLockImpl {
+-    SpinLockImpl();
+-
+-    void Initialize();
+-
+-    oaknut::CodeBlock mem;
+-    oaknut::CodeGenerator code;
+-
+-    void (*lock)(volatile int*);
+-    void (*unlock)(volatile int*);
+-};
+-
+-std::once_flag flag;
+-SpinLockImpl impl;
+-
+-SpinLockImpl::SpinLockImpl()
+-        : mem{4096}
+-        , code{mem.ptr(), mem.ptr()} {}
+-
+-void SpinLockImpl::Initialize() {
+-    mem.unprotect();
+-
+-    lock = code.xptr<void (*)(volatile int*)>();
+-    EmitSpinLockLock(code, X0);
+-    code.RET();
+-
+-    unlock = code.xptr<void (*)(volatile int*)>();
+-    EmitSpinLockUnlock(code, X0);
+-    code.RET();
+-
+-    mem.protect();
+-    mem.invalidate_all();
+-}
+-
+-}  // namespace
+-
++// The host-side monitor uses the same zero/unlocked and one/locked word
++// as the generated lock operations. Compile the host helpers ahead of time.
+ void SpinLock::Lock() {
+-    std::call_once(flag, &SpinLockImpl::Initialize, impl);
+-    impl.lock(&storage);
++    while (__atomic_exchange_n(&storage, 1, __ATOMIC_ACQUIRE) != 0) {
++        while (__atomic_load_n(&storage, __ATOMIC_RELAXED) != 0)
++            std::this_thread::yield();
++    }
+ }
+ 
+ void SpinLock::Unlock() {
+-    std::call_once(flag, &SpinLockImpl::Initialize, impl);
+-    impl.unlock(&storage);
++    __atomic_store_n(&storage, 0, __ATOMIC_RELEASE);
+ }
+ 
+ }  // namespace Dynarmic

@@ -12,6 +12,7 @@
 #include <string>
 
 #include <dynarmic/interface/A32/a32.h>
+#include <dynarmic/interface/exclusive_monitor.h>
 #include <dynarmic/interface/optimization_flags.h>
 
 namespace {
@@ -94,6 +95,11 @@ public:
     void MemoryWrite16(u32 address, u16 value) override { memory.Write16(address, value); }
     void MemoryWrite32(u32 address, u32 value) override { memory.Write32(address, value); }
     void MemoryWrite64(u32 address, u64 value) override { memory.Write64(address, value); }
+    bool MemoryWriteExclusive32(u32 address, u32 value, u32 expected) override {
+        if (memory.Read32(address) != expected) return false;
+        memory.Write32(address, value);
+        return true;
+    }
     void InterpreterFallback(u32, std::size_t) override { std::terminate(); }
     void CallSVC(u32 svc) override {
         ++svc_calls;
@@ -125,10 +131,10 @@ Dynarmic::A32::UserConfig ConservativeConfig(Environment& env) {
     config.always_little_endian = true;
     return config;
 }
-void InitCPU(Dynarmic::A32::Jit& cpu) {
+void InitCPU(Dynarmic::A32::Jit& cpu, u32 iterations = 5) {
     cpu.Regs().fill(0);
     cpu.Regs()[2] = kData;
-    cpu.Regs()[4] = 5;
+    cpu.Regs()[4] = iterations;
     cpu.Regs()[15] = kCode;
     cpu.SetCpsr(0x10);  // ARM state, user mode.
 }
@@ -156,9 +162,9 @@ struct ReferenceCPU {
     GuestMemory memory;
     std::array<u32, 16> regs{};
     u32 cpsr = 0x10;
-    void Init() {
+    void Init(u32 iterations = 5) {
         regs[2] = kData;
-        regs[4] = 5;
+        regs[4] = iterations;
         regs[15] = kCode;
     }
     void Step() {
@@ -169,6 +175,8 @@ struct ReferenceCPU {
         case 0xE3A00000: regs[0] = 0; break;
         case 0xE3A01001: regs[1] = 1; break;
         case 0xE0800001: regs[0] += regs[1]; break;
+        case 0xE2800001: ++regs[0]; break;
+        case 0xEAFFFFFB: next_pc = kCode; break;
         case 0xE5820000: memory.Write32(regs[2], regs[0]); break;
         case 0xE5923000: regs[3] = memory.Read32(regs[2]); break;
         case 0xE2544001: {
@@ -235,7 +243,9 @@ void TestBudget() {
         const u64 before = env.ticks_charged;
         cpu.Run();  // Must return to the host after the cycle budget.
         Require(env.ticks_left == 0, "Run did not exhaust cycle budget");
-        Require(env.ticks_charged > before, "Run consumed no cycles");
+        const u64 charged = env.ticks_charged - before;
+        // The longest block of this fixture is seven one-tick instructions.
+        Require(charged >= budget && charged - budget < 7, "unexpected cycle charge");
         Require(env.add_ticks_calls > 0 && env.remaining_calls > 0,
                 "timer callbacks not reached");
         Require(!env.unexpected_exception && !env.memory.out_of_bounds,
@@ -286,88 +296,130 @@ void TestInvalidate() {
     std::cout << "PASS invalidate recompiled ARM32 code and re-execute\n";
 }
 
+void CheckParity(const Dynarmic::A32::Jit& cpu, const Environment& env,
+                 const ReferenceCPU& reference, const std::string& where) {
+    Require(cpu.Regs() == reference.regs, "register mismatch at " + where);
+    Require((cpu.Cpsr() & kFlagsAndMode) == (reference.cpsr & kFlagsAndMode),
+            "CPSR mismatch at " + where);
+    Require(env.memory.bytes == reference.memory.bytes, "memory mismatch at " + where);
+    Require(!env.unexpected_exception && !env.memory.out_of_bounds &&
+            !reference.memory.out_of_bounds, "unexpected fault at " + where);
+}
+
 void TestParityLong() {
+    constexpr u32 iterations = 1024;
     Environment env;
     WriteLoopProgram(env.memory);
+    ReferenceCPU reference;
+    reference.memory = env.memory;
+    reference.Init(iterations);
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu, iterations);
+    for (unsigned step = 0; step < 2048; ++step) {
+        reference.Step();
+        env.ticks_left = 1;
+        cpu.Step();
+        CheckParity(cpu, env, reference, "step " + std::to_string(step + 1));
+    }
+    Require(cpu.Regs()[0] == 410 && cpu.Regs()[3] == 409 &&
+                env.memory.Read32(kData) == 409 && cpu.Regs()[4] == iterations - 409,
+            "extended fixture did not stay active for 2048 steps");
+}
+
+// A four-instruction basic block with one tick per instruction. Returning at
+// a block boundary permits at most three extra instructions per Run call.
+void WriteActiveLoop(GuestMemory& memory) {
+    memory.Write32(kCode,      0xE2800001);  // add r0, r0, #1
+    memory.Write32(kCode + 4,  0xE5820000);  // str r0, [r2]
+    memory.Write32(kCode + 8,  0xE5923000);  // ldr r3, [r2]
+    memory.Write32(kCode + 12, 0xEAFFFFFB);  // b kCode
+}
+
+void RunActiveBudget(Dynarmic::A32::Jit& cpu, Environment& env, ReferenceCPU& reference,
+                     u64 budget) {
+    const auto before = env.ticks_charged;
+    env.ticks_left = budget;
+    cpu.Run();
+    const auto charged = env.ticks_charged - before;
+    Require(env.ticks_left == 0 && charged >= budget && charged - budget < 4,
+            "budget " + std::to_string(budget) + " charged " + std::to_string(charged));
+    for (u64 i = 0; i < charged; ++i) reference.Step();
+    CheckParity(cpu, env, reference, "Run with budget " + std::to_string(budget));
+}
+
+void TestBudgetStress() {
+    Environment env;
+    WriteActiveLoop(env.memory);
     ReferenceCPU reference;
     reference.memory = env.memory;
     reference.Init();
     Dynarmic::A32::Jit cpu(ConservativeConfig(env));
     InitCPU(cpu);
-    for (unsigned step = 0; step < 2048; ++step) {
-        reference.Step();
-        env.ticks_left = 1;
-        cpu.Step();
-        for (std::size_t index = 0; index < 16; ++index) {
-            Require(cpu.Regs()[index] == reference.regs[index],
-                    "extended parity step " + std::to_string(step + 1) +
-                        " r" + std::to_string(index) + " JIT=" +
-                        Hex(cpu.Regs()[index]) + " reference=" + Hex(reference.regs[index]));
-        }
-        Require((cpu.Cpsr() & kFlagsAndMode) == (reference.cpsr & kFlagsAndMode),
-                "extended parity CPSR diverged at step " + std::to_string(step + 1));
-        Require(env.memory.bytes == reference.memory.bytes,
-                "extended parity memory diverged at step " + std::to_string(step + 1));
-        Require(!env.memory.out_of_bounds && !env.unexpected_exception,
-                "unexpected fault in extended parity test");
-    }
-    Require(cpu.Regs()[0] == 5 && env.memory.Read32(kData) == 5,
-            "extended parity final result incorrect");
-    std::cout << "PASS extended ARM32 JIT/interpreter parity (2048 steps)\n";
-}
-
-void TestBudgetStress() {
-    Environment env;
-    WriteLoopProgram(env.memory);
-    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
-    InitCPU(cpu);
-    // Test the 16K budget from the iPhone run-80 log and longer slices.
-    constexpr std::array<u64, 7> budgets = {64, 256, 1024, 4096, 16384, 65536, 262144};
+    constexpr std::array<u64, 8> budgets = {1, 65, 256, 1024, 4096, 16384, 65536, 262144};
     for (unsigned pass = 0; pass < 2; ++pass) {
-        for (u64 budget : budgets) {
-            env.ticks_left = budget;
-            const u64 before = env.ticks_charged;
-            cpu.Run();
-            Require(env.ticks_left == 0,
-                    "Run returned before exhausting budget " + std::to_string(budget));
-            Require(env.ticks_charged > before,
-                    "Run charged no ticks at budget " + std::to_string(budget));
-            Require(!env.unexpected_exception && !env.memory.out_of_bounds,
-                    "Run raised an unexpected fault at budget " + std::to_string(budget));
-        }
+        for (u64 budget : budgets) RunActiveBudget(cpu, env, reference, budget);
     }
-    Require(cpu.Regs()[0] == 5 && cpu.Regs()[3] == 5 &&
-                env.memory.Read32(kData) == 5,
-            "large-budget Run corrupted guest state");
-    std::cout << "PASS repeated continuous Run budgets up to 262144 ticks\n";
 }
 
 void TestStepRunTransition() {
     Environment env;
-    WriteLoopProgram(env.memory);
+    WriteActiveLoop(env.memory);
+    ReferenceCPU reference;
+    reference.memory = env.memory;
+    reference.Init();
     Dynarmic::A32::Jit cpu(ConservativeConfig(env));
     InitCPU(cpu);
-    for (unsigned i = 0; i < 64; ++i) {
+    for (u64 budget : {u64{64}, u64{257}, u64{4096}, u64{16384}}) {
+        for (unsigned i = 0; i < 3; ++i) {
+            env.ticks_left = 1;
+            cpu.Step();
+            reference.Step();
+            CheckParity(cpu, env, reference, "Step at mode transition");
+        }
+        RunActiveBudget(cpu, env, reference, budget);
+    }
+}
+
+void TestExclusive() {
+    Environment env;
+    Dynarmic::ExclusiveMonitor monitor(2);
+    auto config = ConservativeConfig(env);
+    config.global_monitor = &monitor;
+    config.processor_id = 0;
+    Dynarmic::A32::Jit cpu(config);
+    InitCPU(cpu);
+    // Synthetic ARM guest: load-exclusive, store-exclusive, idle.
+    env.memory.Write32(kCode,      0xE1920F9F);  // ldrex r0, [r2]
+    env.memory.Write32(kCode + 4,  0xE1821F93);  // strex r1, r3, [r2]
+    env.memory.Write32(kCode + 8,  0xEAFFFFFE);  // b .
+    env.memory.Write32(kData, 7);
+    cpu.Regs()[3] = 11;
+    auto step = [&] {
         env.ticks_left = 1;
         cpu.Step();
-    }
-    constexpr u32 idle_pc = kCode + 8 * 4;
-    Require(cpu.Regs()[15] == idle_pc && cpu.Regs()[0] == 5,
-            "64-step preflight failed to reach idle branch");
-    for (u64 budget : {u64{64}, u64{256}, u64{4096}, u64{16384}}) {
-        env.ticks_left = budget;
-        cpu.Run();
-        Require(env.ticks_left == 0 && cpu.Regs()[15] == idle_pc,
-                "Step-to-Run transition broke at budget " + std::to_string(budget));
-        env.ticks_left = 1;
-        cpu.Step();
-        Require(cpu.Regs()[15] == idle_pc && cpu.Regs()[0] == 5 &&
-                    env.memory.Read32(kData) == 5,
-                "Run-to-Step transition corrupted guest state");
-    }
-    Require(!env.unexpected_exception && !env.memory.out_of_bounds,
-            "unexpected fault in Step/Run transitions");
-    std::cout << "PASS repeated Step/Run/Step transitions\n";
+    };
+    step();
+    Require(cpu.Regs()[0] == 7 && cpu.Regs()[15] == kCode + 4, "LDREX did not return");
+    step();
+    Require(cpu.Regs()[1] == 0 && env.memory.Read32(kData) == 11, "STREX did not commit");
+
+    cpu.Regs()[15] = kCode;
+    step();
+    Require(monitor.ReadAndMark<u32>(1, kData, [&] { return env.memory.Read32(kData); }) == 11,
+            "second processor observed the wrong value");
+    Require(monitor.DoExclusiveOperation<u32>(1, kData, [&](u32 expected) {
+                return env.MemoryWriteExclusive32(kData, 13, expected);
+            }), "second processor failed to acquire the reservation");
+    step();
+    Require(cpu.Regs()[1] == 1 && env.memory.Read32(kData) == 13,
+            "STREX succeeded after losing its reservation");
+
+    cpu.Regs()[15] = kCode;
+    env.ticks_left = 16;
+    cpu.Run();
+    Require(cpu.Regs()[0] == 13 && cpu.Regs()[1] == 0 && env.memory.Read32(kData) == 11,
+            "exclusive load/store pair failed during Run");
+    Require(!env.unexpected_exception && !env.memory.out_of_bounds, "fault during exclusive pair");
 }
 
 void TestSVCChain() {
@@ -433,7 +485,7 @@ int main(int argc, char** argv) {
 #if !defined(__aarch64__) && !defined(__arm64__)
         throw std::runtime_error("This harness MUST execute on native ARM64");
 #endif
-        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress");
+        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive");
         const std::string name{argv[1]};
         if (name == "parity") TestParity();
         else if (name == "budget") TestBudget();
@@ -444,6 +496,7 @@ int main(int argc, char** argv) {
         else if (name == "step_run") TestStepRunTransition();
         else if (name == "svc_chain") TestSVCChain();
         else if (name == "invalidate_stress") TestInvalidateStress();
+        else if (name == "exclusive") TestExclusive();
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {

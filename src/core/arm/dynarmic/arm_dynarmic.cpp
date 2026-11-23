@@ -337,6 +337,7 @@ void ARM_Dynarmic::Run() {
     const unsigned probe = gAzaharJITRunCount.fetch_add(1, std::memory_order_relaxed);
     const bool trace_probe =
         probe < 4 || probe == 15 || probe == 63 || probe == 255 || probe == kStepProbeCount - 1;
+    AzaharScopedJITRun active_jit{jit};
     if (probe < kStepProbeCount) {
         if (trace_probe) {
             char status[192];
@@ -380,7 +381,6 @@ void ARM_Dynarmic::Run() {
                           GetReg(1), GetReg(14), static_cast<long long>(GetTimer().GetDowncount()));
             LibRetro::DisplayMessage(message);
         }
-        AzaharScopedJITRun active_step{jit};
         const auto reason = jit->Step();
         if (trace) {
             char message[256];
@@ -432,7 +432,6 @@ void ARM_Dynarmic::Run() {
     }
 #endif
 #ifdef IOS
-    AzaharScopedJITRun active_jit{jit};
     const auto jit_halt_reason = jit->Run();
 #else
     jit->Run();
@@ -464,6 +463,7 @@ void ARM_Dynarmic::Step() {
     if (trace_first_step) {
         LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Step entered");
     }
+    AzaharScopedJITRun active_step{jit};
 #endif
     jit->Step();
 #ifdef IOS

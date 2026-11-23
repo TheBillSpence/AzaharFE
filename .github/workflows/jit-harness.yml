@@ -7,12 +7,18 @@ on:
       - 'tools/jit-harness/**'
       - '.github/workflows/jit-harness.yml'
       - 'src/core/arm/dynarmic/**'
+      - 'externals/dynarmic'
+      - 'ios-app/patches/dynarmic-host-monitor.patch'
 permissions:
   contents: read
 jobs:
   arm64-jit-tests:
-    name: Run real Dynarmic ARM64 JIT tests
-    runs-on: macos-15
+    name: Run ARM64 JIT tests on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
       - name: Checkout exact AzaharFE revision
@@ -25,7 +31,11 @@ jobs:
           set -euo pipefail
           git submodule update --init --recursive --depth 1 externals/dynarmic
           git -C externals/dynarmic rev-parse HEAD
-      - name: Verify Apple Silicon host and install build tools
+      - name: Use the compiled ARM64 host lock for exclusive accesses
+        run: git -C externals/dynarmic apply "$GITHUB_WORKSPACE/ios-app/patches/dynarmic-host-monitor.patch"
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -34,14 +44,18 @@ jobs:
           brew install ninja boost
           cmake --version
           clang++ --version
+      - name: Install Linux ARM64 build tools
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libboost-dev
       - name: Configure isolated Dynarmic host harness
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S tools/jit-harness -B build-jit-harness -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.4
+          cmake -S tools/jit-harness -B build-jit-harness -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Compile real ARM32-to-ARM64 JIT tests
         shell: bash
         run: |
@@ -58,7 +72,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: azahar-jit-host-regression-results
+          name: azahar-jit-host-regression-results${{ runner.os == 'Linux' && '-linux' || '' }}
           path: build-jit-harness/ctest-results.xml
           if-no-files-found: ignore
           retention-days: 14

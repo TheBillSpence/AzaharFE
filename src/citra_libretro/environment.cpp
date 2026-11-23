@@ -167,6 +167,9 @@ bool Shutdown() {
 
 /// Displays the specified message to the screen.
 bool DisplayMessage(const char* sg) {
+    if (!environ_cb) {
+        return false;
+    }
     retro_message msg;
     msg.msg = sg;
     msg.frames = 60 * 10;

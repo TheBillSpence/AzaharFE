@@ -26,7 +26,6 @@ jobs:
       - name: Patch LibreSSL for iOS
         run: |
           python3 - <<'PY'
-          import re
           from pathlib import Path
 
           root = Path("externals/libressl")
@@ -39,30 +38,6 @@ jobs:
               raise SystemExit("LibreSSL syslog block not found")
           cryptlib.write_text(s.replace(old, new, 1))
 
-          memclr = root / "crypto/mem_clr.c"
-          s = memclr.read_text()
-          old = "\texplicit_bzero(ptr, len);"
-          new = "\tvolatile unsigned char *p = (volatile unsigned char *)ptr;\n\twhile (len-- > 0)\n\t\t*p++ = 0;"
-          if old not in s:
-              raise SystemExit("LibreSSL mem_clr.c explicit_bzero call not found")
-          memclr.write_text(s.replace(old, new, 1))
-
-          replacements = 0
-          for path in root.rglob("*.c"):
-              if path == memclr:
-                  continue
-              s = path.read_text()
-              updated, count = re.subn(
-                  r"explicit_bzero\s*\(([^;]*?)\s*,\s*([^;]*?)\);",
-                  r"memset(\1, 0, \2);",
-                  s,
-              )
-              if count:
-                  path.write_text(updated)
-                  replacements += count
-                  print(f"Patched {count} explicit_bzero call(s) in {path}")
-
-          print(f"Patched {replacements} additional explicit_bzero call(s)")
           PY
 
       - name: Remove macOS-only Qt sources for iOS
@@ -117,6 +92,7 @@ jobs:
           -DCMAKE_OSX_SYSROOT=iphoneos
           -DCMAKE_OSX_ARCHITECTURES=arm64
           -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          -DHAVE_EXPLICIT_BZERO=OFF
           -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO
@@ -128,7 +104,7 @@ jobs:
           -DENABLE_CUBEB=OFF
           -DENABLE_FFMPEG=OFF
           -DENABLE_DISCORD_RPC=OFF
-          -DCITRA_USE_PRECOMPDILED_HEADERS=OFF
+          -DCITRA_USE_PRECOMPILED_HEADERS=OFF
 
       - name: Build iOS target
         run: cmake --build build-ios --parallel 3 --target citra_meta

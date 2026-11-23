@@ -8,6 +8,8 @@ on:
       - 'ios-app/**'
       - 'src/citra_libretro/**'
       - 'src/core/arm/dynarmic/**'
+      - 'externals/dynarmic'
+      - 'externals/oaknut'
       - '.github/workflows/ios-frontend.yml'
 
 permissions:
@@ -103,118 +105,8 @@ jobs:
               )
           PY
 
-      - name: Patch LibreSSL explicit_bzero for iOS
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          roots = [
-              Path("externals/libressl/crypto"),
-              Path("externals/libressl/ssl"),
-          ]
-
-          for root in roots:
-              if not root.is_dir():
-                  raise SystemExit(f"ERROR: LibreSSL folder was not found: {root}")
-
-          def find_call_end(source, opening):
-              depth = 1
-              i = opening + 1
-              while i < len(source):
-                  char = source[i]
-
-                  if char == '"' or char == "'":
-                      quote = char
-                      i += 1
-                      while i < len(source):
-                          if source[i] == "\\":
-                              i += 2
-                              continue
-                          if source[i] == quote:
-                              break
-                          i += 1
-                  elif char == "(":
-                      depth += 1
-                  elif char == ")":
-                      depth -= 1
-                      if depth == 0:
-                          return i
-                  i += 1
-              raise ValueError("Unmatched parentheses in explicit_bzero call")
-
-          def split_arguments(source):
-              depth = 0
-              for i, char in enumerate(source):
-                  if char == "(":
-                      depth += 1
-                  elif char == ")":
-                      depth -= 1
-                  elif char == "," and depth == 0:
-                      return source[:i].strip(), source[i + 1:].strip()
-              raise ValueError("Could not split explicit_bzero arguments")
-
-          patched = 0
-
-          paths = []
-          for root in roots:
-              paths.extend(root.rglob("*.c"))
-              paths.extend(root.rglob("*.h"))
-
-          for path in paths:
-              source = path.read_text()
-              output = []
-              position = 0
-              changed = False
-
-              while True:
-                  start = source.find("explicit_bzero", position)
-
-                  if start == -1:
-                      output.append(source[position:])
-                      break
-
-                  before = source[start - 1] if start > 0 else " "
-                  after_name = start + len("explicit_bzero")
-
-                  if (before.isalnum() or before == "_"
-                      or after_name >= len(source)
-                      or source[after_name] != "("):
-                      output.append(source[position:after_name])
-                      position = after_name
-                      continue
-
-                  opening = after_name
-                  ending = find_call_end(source, opening)
-                  first, second = split_arguments(
-                      source[opening + 1:ending]
-                  )
-
-                  replacement = (
-                      "{ "
-                      "volatile unsigned char *azahar_bzero_p = "
-                      "(volatile unsigned char *)(" + first + "); "
-                      "size_t azahar_bzero_n = (size_t)(" + second + "); "
-                      "while (azahar_bzero_n != 0) { "
-                      "*azahar_bzero_p++ = 0; "
-                      "--azahar_bzero_n; "
-                      "} "
-                      "}"
-                  )
-
-                  output.append(source[position:start])
-                  output.append(replacement)
-                  position = ending + 1
-                  changed = True
-                  patched += 1
-
-              if changed:
-                  path.write_text("".join(output))
-                  print(f"Patched: {path}")
-
-          print(f"Total explicit_bzero calls patched: {patched}")
-          PY
+      - name: Use the compiled ARM64 host lock for exclusive accesses
+        run: git -C externals/dynarmic apply "$GITHUB_WORKSPACE/ios-app/patches/dynarmic-host-monitor.patch"
 
       - name: Patch Dynarmic and Oaknut for iOS dual-mapped JIT
         run: |
@@ -233,6 +125,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DHAVE_EXPLICIT_BZERO=OFF \
             -DHAVE_REALLOCARRAY=OFF \
             -DHAVE_TIMINGSAFE_MEMCMP=OFF \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
