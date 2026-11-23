@@ -40,6 +40,7 @@ namespace Core {
 // Start tracing timer callbacks only when the first full guest JIT run begins.
 // Single-step uses a separate code path and isn't representative here.
 static std::atomic<bool> gAzaharJITFullRunStarted{false};
+static std::atomic<unsigned> gAzaharJITRunCount{0};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
@@ -52,6 +53,19 @@ public:
     ~DynarmicUserCallbacks() = default;
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
+#ifdef IOS
+        // A code fetch identifies where translation has reached, even when Run()
+        // has yet to return. Limit output to the first 12 page changes per core.
+        const u32 page = vaddr >> 12;
+        if (code_page_reports < 12 && page != last_code_page) {
+            last_code_page = page;
+            ++code_page_reports;
+            char message[128];
+            std::snprintf(message, sizeof(message), "JIT27TRACE code fetch core=%u addr=0x%08x",
+                          parent.GetID(), vaddr);
+            LibRetro::DisplayMessage(message);
+        }
+#endif
         return memory.Read32OrNullopt(vaddr);
     }
 
@@ -178,8 +192,8 @@ public:
         parent.GetTimer().AddTicks(ticks);
 #ifdef IOS
         if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
-            static std::atomic<unsigned> trace_count{0};
-            if (trace_count.fetch_add(1, std::memory_order_relaxed) < 3) {
+            if (add_tick_reports < 3) {
+                ++add_tick_reports;
                 char info[160];
                 std::snprintf(info, sizeof(info),
                               "JIT27TRACE AddTicks(%llu) core=%u remaining=%lld",
@@ -200,8 +214,8 @@ public:
             const auto remaining = static_cast<std::uint64_t>(ticks <= 0 ? 0 : ticks);
             const auto limited = remaining < gAzaharJITBudgetCap
                                      ? remaining : gAzaharJITBudgetCap;
-            static std::atomic<unsigned> trace_count{0};
-            if (trace_count.fetch_add(1, std::memory_order_relaxed) < 3) {
+            if (remaining_tick_reports < 3) {
+                ++remaining_tick_reports;
                 char info[170];
                 std::snprintf(info, sizeof(info),
                               "JIT27TRACE GetTicksRemaining core=%u original=%lld capped=%llu",
@@ -218,6 +232,12 @@ public:
         return Core::TicksForInstruction(is_thumb, instruction);
     }
 
+#ifdef IOS
+    u32 last_code_page = ~u32{0};
+    unsigned code_page_reports = 0;
+    unsigned add_tick_reports = 0;
+    unsigned remaining_tick_reports = 0;
+#endif
     ARM_Dynarmic& parent;
     Kernel::SVCContext svc_context;
     Memory::MemorySystem& memory;
@@ -229,6 +249,12 @@ ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_,
     : ARM_Interface(core_id_, timer_), system(system_), memory(memory_),
       cb(std::make_unique<DynarmicUserCallbacks>(*this)),
       exclusive_monitor{dynamic_cast<Core::DynarmicExclusiveMonitor&>(exclusive_monitor_)} {
+#ifdef IOS
+    if (core_id_ == 0) {
+        gAzaharJITRunCount.store(0, std::memory_order_relaxed);
+        gAzaharJITFullRunStarted.store(false, std::memory_order_relaxed);
+    }
+#endif
     SetPageTable(memory.GetCurrentPageTable());
 }
 
@@ -249,9 +275,8 @@ void ARM_Dynarmic::Run() {
     // hundred guest instructions first to determine whether this is
     // an individual instruction, core, or full-dispatch-loop failure.
     // Limit logs so the iPhone's Documents file stays manageable.
-    static std::atomic<unsigned> run_probe_count{0};
     constexpr unsigned kStepProbeCount = 512;
-    const unsigned probe = run_probe_count.fetch_add(1, std::memory_order_relaxed);
+    const unsigned probe = gAzaharJITRunCount.fetch_add(1, std::memory_order_relaxed);
     const bool trace_probe = probe < 4 || probe == 15 || probe == 63 ||
                              probe == 255 || probe == kStepProbeCount - 1;
     if (probe < kStepProbeCount) {
@@ -290,12 +315,15 @@ void ARM_Dynarmic::Run() {
         if (probe == kStepProbeCount) {
             gAzaharJITFullRunStarted.store(true, std::memory_order_release);
         }
-        trace_budget_stage = stage_number <= kLastStage && run_index % kRunsPerStage == 0;
+        // Sample every run in the 16K stage: the previous black screen was
+        // observed between its first return and the next stage marker.
+        trace_budget_stage = stage_number <= kLastStage &&
+                             (run_index % kRunsPerStage == 0 || gAzaharJITBudgetCap == 16384);
         if (trace_budget_stage) {
             char status[200];
             std::snprintf(status, sizeof(status),
-                          "JIT27TRACE budget test stage=%u run=%u core=%u pc=0x%08x budget=%llu entered",
-                          stage + 1, run_index + 1, GetID(), jit->Regs()[15],
+                          "JIT27TRACE stage=%u run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x budget=%llu entered",
+                          stage + 1, run_index + 1, GetID(), GetPC(), GetReg(0), GetReg(1),
                           static_cast<unsigned long long>(gAzaharJITBudgetCap));
             LibRetro::DisplayMessage(status);
         }
@@ -309,8 +337,8 @@ void ARM_Dynarmic::Run() {
     if (trace_budget_stage) {
         char status[200];
         std::snprintf(status, sizeof(status),
-                      "JIT27TRACE budget test run=%u core=%u pc=0x%08x returned",
-                      probe - kStepProbeCount + 1, GetID(), jit->Regs()[15]);
+                      "JIT27TRACE run=%u core=%u pc=0x%08x r0=0x%08x r1=0x%08x returned",
+                      probe - kStepProbeCount + 1, GetID(), GetPC(), GetReg(0), GetReg(1));
         LibRetro::DisplayMessage(status);
     }
 #endif
@@ -501,12 +529,16 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
           Dynarmic::OptimizationFlag::ReturnStackBuffer |
           Dynarmic::OptimizationFlag::FastDispatch);
     config.enable_cycle_counting = true;
-    LibRetro::DisplayMessage("JIT27TRACE conservative dispatcher mode; block linking OFF");
-#endif
-    config.callbacks = cb.get();
+    // Leave Dynarmic's optional page table unset to isolate generated direct
+    // memory accesses from the rest of the iOS JIT. Loads and stores then use
+    // the existing MemorySystem callbacks, including exclusive accesses.
+    LibRetro::DisplayMessage("JIT27TRACE guest memory callbacks; block linking OFF");
+#else
     if (current_page_table) {
         config.page_table = &current_page_table->GetPointerArray();
     }
+#endif
+    config.callbacks = cb.get();
     config.coprocessors[15] = std::make_shared<DynarmicCP15>(cp15_state);
     config.define_unpredictable_behaviour = true;
 
