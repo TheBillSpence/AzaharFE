@@ -22,6 +22,7 @@ LiveContainer, StikDebug, a 3DS GPU or commercial ROM data.
 | opt_fast | Tests restored upstream dispatch optimizations with the same correctness checks |
 | opt_turbo | Checks 32 MiB optimized ARM64 JIT code cache and long execution budgets |
 | opt_direct | Tests optimized JIT with direct guest-RAM page-table loads and stores |
+| microbench | Exercises the exact two-instruction ALU/branch fixture used by the optional iPhone benchmark in both safe and fast modes |
 
 The interpreter deliberately supports **only** this fixture. The longer parity
 case keeps the loop active for all 2,048 instructions. These tests use

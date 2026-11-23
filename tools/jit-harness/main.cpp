@@ -180,6 +180,7 @@ struct ReferenceCPU {
         case 0xE0800001: regs[0] += regs[1]; break;
         case 0xE2800001: ++regs[0]; break;
         case 0xEAFFFFFB: next_pc = kCode; break;
+        case 0xEAFFFFFD: next_pc = kCode; break;
         case 0xE5820000: memory.Write32(regs[2], regs[0]); break;
         case 0xE5923000: regs[3] = memory.Read32(regs[2]); break;
         case 0xE2544001: {
@@ -348,6 +349,27 @@ void RunActiveBudget(Dynarmic::A32::Jit& cpu, Environment& env, ReferenceCPU& re
             "budget " + std::to_string(budget) + " charged " + std::to_string(charged));
     for (u64 i = 0; i < charged; ++i) reference.Step();
     CheckParity(cpu, env, reference, "Run with budget " + std::to_string(budget));
+}
+
+// Mirror the iPhone's one-time ALU/branch microbenchmark, without launching a game.
+// Verify that both dispatcher modes obey timing limits and independent ARM state.
+void TestIOSMicrobenchmarkFixture() {
+    for (const auto& mode : {"safe", "fast"}) {
+        Environment env;
+        env.memory.Write32(kCode, 0xE2800001); // ADD r0, r0, #1
+        env.memory.Write32(kCode + 4, 0xEAFFFFFD); // B 0x1000
+        ReferenceCPU reference;
+        reference.memory = env.memory;
+        reference.Init();
+        auto config = ConservativeConfig(env);
+        config.optimizations =
+            Core::SelectIOSJitOptimizations(Dynarmic::A32::UserConfig{}.optimizations, mode);
+        Dynarmic::A32::Jit cpu(config);
+        InitCPU(cpu);
+        for (u64 budget : {u64{4096}, u64{65536}, u64{262144}}) {
+            RunActiveBudget(cpu, env, reference, budget);
+        }
+    }
 }
 
 void TestBudgetStress() {
@@ -560,7 +582,7 @@ int main(int argc, char** argv) {
 #if !defined(__aarch64__) && !defined(__arm64__)
         throw std::runtime_error("This harness MUST execute on native ARM64");
 #endif
-        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive|opt_linked|opt_fast|opt_turbo|opt_direct");
+        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress|exclusive|opt_linked|opt_fast|opt_turbo|opt_direct|microbench");
         const std::string name{argv[1]};
         if (name == "parity") TestParity();
         else if (name == "budget") TestBudget();
@@ -576,6 +598,7 @@ int main(int argc, char** argv) {
         else if (name == "opt_fast") TestOptimizationMode("fast");
         else if (name == "opt_turbo") TestOptimizationMode("turbo");
         else if (name == "opt_direct") TestOptimizationMode("direct");
+        else if (name == "microbench") TestIOSMicrobenchmarkFixture();
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
