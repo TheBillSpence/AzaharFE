@@ -203,3 +203,20 @@ keeping regular macOS builds unaffected. The IPA workflow now inspects the
 built dylib with `nm -gU` and fails CI if the export is absent. This
 repairs the frontend dlsym contract but does not establish that cooperative
 HaltExecution can interrupt the JIT's currently frozen instruction.
+
+## iOS output resolution (1×–4×)
+
+The iPhone settings offer **Output resolution** at 1× native, 2×, 3× or
+4× (default **1×**) globally or per-game. The libretro core already parses
+`citra_resolution_factor`; the iOS frontend now supplies that value before
+loading the game. The available iOS core-option values are limited to 1–4,
+leaving other platforms' 1–18× choices unchanged. Restart a game to apply a
+changed scale.
+
+**Important:** The current iOS build uses the software renderer. Its 3DS
+screen pixels are rasterized at native resolution and then upscaled into the
+larger output buffer. Increasing this factor does **not** increase real 3D
+rendering detail without a hardware renderer (such as a future Vulkan/Metal
+backend). It does increase frame memory, copies, and CPU compositing work.
+For best performance, use 1×. In Large and small screen layout, iOS software
+output also respects 1×–3× instead of silently forcing a 4× framebuffer.

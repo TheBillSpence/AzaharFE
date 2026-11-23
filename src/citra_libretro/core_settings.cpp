@@ -389,6 +389,7 @@ static constexpr retro_core_option_v2_definition option_definitions[] = {
             { "2", "2x (800x480)" },
             { "3", "3x (1200x720)" },
             { "4", "4x (1600x960)" },
+#ifndef IOS
             { "5", "5x (2000x1200)" },
             { "6", "6x (2400x1440)" },
             { "7", "7x (2800x1680)" },
@@ -403,6 +404,7 @@ static constexpr retro_core_option_v2_definition option_definitions[] = {
             { "16", "16x (6400x3840)" },
             { "17", "17x (6800x4080)" },
             { "18", "18x (7200x4320)" },
+#endif
             { nullptr, nullptr }
         },
         "1"

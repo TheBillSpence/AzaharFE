@@ -264,9 +264,16 @@ LayoutGeometry ComputeLayoutGeometry() {
             baseY = Core::kScreenTopHeight;
         }
 
-        if (scaling < 4) {
-            // Unfortunately, to get this aspect ratio correct (and have non-blurry 1x scaling),
-            //  we have to have a pretty large buffer for the minimum ratio.
+        // The legacy 4x minimum protects the tiny secondary screen when using
+        // hardware rendering. On iOS software rendering, honor the selected
+        // output factor exactly instead of silently turning 1x-3x into 4x.
+#ifdef IOS
+        const bool requires_minimum_four_x =
+            Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Software;
+#else
+        const bool requires_minimum_four_x = true;
+#endif
+        if (scaling < 4 && requires_minimum_four_x) {
             baseX *= 4;
             baseY *= 4;
         } else {
