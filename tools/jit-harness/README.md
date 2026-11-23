@@ -13,8 +13,14 @@ LiveContainer, StikDebug, a 3DS GPU or commercial ROM data.
 | budget | Dynarmic Run returns at cycle budgets 32, 64 and 256 and reports consumed guest cycles through callbacks |
 | svc | A synthetic SVC 0x21 reaches a host callback, requests a cooperative JIT halt and resumes execution |
 | invalidate | A compiled ARM32 instruction can be modified, invalidated and re-executed with the new result |
+| parity_long | 2,048 JIT instructions checked against an independent interpreter, including registers, CPSR and memory |
+| budget_stress | Repeated JIT runs with increasingly large budgets up to 262,144 ticks |
+| step_run | Repeated Step/Run/Step transitions preserve guest CPU state |
+| svc_chain | Three SVC 0x21 halt/resume cycles in one synthetic ARM32 program |
+| invalidate_stress | Patch and invalidate the same guest instruction 32 times to catch stale code |
 
-The interpreter deliberately supports **only** this fixture. These tests use
+The interpreter deliberately supports **only** this fixture. The longer parity
+case extends the same test program; it is not full ARM32 instruction coverage. These tests use
 AzaharFE's conservative optimization flags and 16 MiB code cache, but the
 **normal macOS executable-memory path**, not iOS 27 TXM or the patched
 Oaknut iOS mapping code.

@@ -16,8 +16,8 @@ def replace(source: str, before: str, after: str, label: str, count: int = 1) ->
 
 oaknut = Path("externals/oaknut/include/oaknut/code_block.hpp")
 source = oaknut.read_text()
-source = replace(source, "#include <new>\n",
-                 "#include <new>\n", "new header guard")
+if "#include <new>\n" not in source:
+    raise SystemExit("Oaknut missing expected <new> header")
 source = replace(source, "#    include <TargetConditionals.h>\n",
                  "#    include <mach/mach.h>\n#    include <mach/vm_map.h>\n"
                  "#    include <TargetConditionals.h>\n", "Mach headers")
@@ -57,11 +57,14 @@ source = replace(
                                VM_FLAGS_ANYWHERE, mach_task_self(),
                                reinterpret_cast<vm_address_t>(m_memory),
                                FALSE, &current, &maximum, VM_INHERIT_NONE);
-        if (result != KERN_SUCCESS)
+        if (result != KERN_SUCCESS) {
+            munmap(m_memory, size);
             throw std::bad_alloc{};
+        }
         if (vm_protect(mach_task_self(), writable, (vm_size_t)size, FALSE,
                        VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS) {
             vm_deallocate(mach_task_self(), writable, (vm_size_t)size);
+            munmap(m_memory, size);
             throw std::bad_alloc{};
         }
         m_writable_memory = reinterpret_cast<std::uint32_t*>(writable);""",

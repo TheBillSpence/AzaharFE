@@ -285,6 +285,147 @@ void TestInvalidate() {
     Require(cpu.Regs()[0] == 7, "guest code cache invalidation did not work");
     std::cout << "PASS invalidate recompiled ARM32 code and re-execute\n";
 }
+
+void TestParityLong() {
+    Environment env;
+    WriteLoopProgram(env.memory);
+    ReferenceCPU reference;
+    reference.memory = env.memory;
+    reference.Init();
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu);
+    for (unsigned step = 0; step < 2048; ++step) {
+        reference.Step();
+        env.ticks_left = 1;
+        cpu.Step();
+        for (std::size_t index = 0; index < 16; ++index) {
+            Require(cpu.Regs()[index] == reference.regs[index],
+                    "extended parity step " + std::to_string(step + 1) +
+                        " r" + std::to_string(index) + " JIT=" +
+                        Hex(cpu.Regs()[index]) + " reference=" + Hex(reference.regs[index]));
+        }
+        Require((cpu.Cpsr() & kFlagsAndMode) == (reference.cpsr & kFlagsAndMode),
+                "extended parity CPSR diverged at step " + std::to_string(step + 1));
+        Require(env.memory.bytes == reference.memory.bytes,
+                "extended parity memory diverged at step " + std::to_string(step + 1));
+        Require(!env.memory.out_of_bounds && !env.unexpected_exception,
+                "unexpected fault in extended parity test");
+    }
+    Require(cpu.Regs()[0] == 5 && env.memory.Read32(kData) == 5,
+            "extended parity final result incorrect");
+    std::cout << "PASS extended ARM32 JIT/interpreter parity (2048 steps)\n";
+}
+
+void TestBudgetStress() {
+    Environment env;
+    WriteLoopProgram(env.memory);
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu);
+    // Test the 16K budget from the iPhone run-80 log and longer slices.
+    constexpr std::array<u64, 7> budgets = {64, 256, 1024, 4096, 16384, 65536, 262144};
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (u64 budget : budgets) {
+            env.ticks_left = budget;
+            const u64 before = env.ticks_charged;
+            cpu.Run();
+            Require(env.ticks_left == 0,
+                    "Run returned before exhausting budget " + std::to_string(budget));
+            Require(env.ticks_charged > before,
+                    "Run charged no ticks at budget " + std::to_string(budget));
+            Require(!env.unexpected_exception && !env.memory.out_of_bounds,
+                    "Run raised an unexpected fault at budget " + std::to_string(budget));
+        }
+    }
+    Require(cpu.Regs()[0] == 5 && cpu.Regs()[3] == 5 &&
+                env.memory.Read32(kData) == 5,
+            "large-budget Run corrupted guest state");
+    std::cout << "PASS repeated continuous Run budgets up to 262144 ticks\n";
+}
+
+void TestStepRunTransition() {
+    Environment env;
+    WriteLoopProgram(env.memory);
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu);
+    for (unsigned i = 0; i < 64; ++i) {
+        env.ticks_left = 1;
+        cpu.Step();
+    }
+    constexpr u32 idle_pc = kCode + 8 * 4;
+    Require(cpu.Regs()[15] == idle_pc && cpu.Regs()[0] == 5,
+            "64-step preflight failed to reach idle branch");
+    for (u64 budget : {u64{64}, u64{256}, u64{4096}, u64{16384}}) {
+        env.ticks_left = budget;
+        cpu.Run();
+        Require(env.ticks_left == 0 && cpu.Regs()[15] == idle_pc,
+                "Step-to-Run transition broke at budget " + std::to_string(budget));
+        env.ticks_left = 1;
+        cpu.Step();
+        Require(cpu.Regs()[15] == idle_pc && cpu.Regs()[0] == 5 &&
+                    env.memory.Read32(kData) == 5,
+                "Run-to-Step transition corrupted guest state");
+    }
+    Require(!env.unexpected_exception && !env.memory.out_of_bounds,
+            "unexpected fault in Step/Run transitions");
+    std::cout << "PASS repeated Step/Run/Step transitions\n";
+}
+
+void TestSVCChain() {
+    Environment env;
+    constexpr u32 code[] = {
+        0xE3A00001,  // mov r0, #1
+        0xEF000021,  // svc #0x21
+        0xE2800002,  // add r0, r0, #2
+        0xEF000021,  // svc #0x21
+        0xE2800004,  // add r0, r0, #4
+        0xEF000021,  // svc #0x21
+        0xE2800008,  // add r0, r0, #8
+        0xEAFFFFFE,  // b .
+    };
+    for (std::size_t i = 0; i < std::size(code); ++i)
+        env.memory.Write32(kCode + static_cast<u32>(i * 4), code[i]);
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu);
+    env.halt_at_svc = &cpu;
+    constexpr u32 expected[] = {1, 3, 7};
+    for (unsigned i = 0; i < 3; ++i) {
+        env.ticks_left = 128;
+        cpu.Run();
+        Require(env.svc_calls == i + 1 && env.last_svc == 0x21 &&
+                    cpu.Regs()[0] == expected[i],
+                "SVC halt/resume chain failed at boundary " + std::to_string(i + 1));
+        Require(!env.unexpected_exception && !env.memory.out_of_bounds,
+                "SVC chain triggered a fault");
+    }
+    env.halt_at_svc = nullptr;
+    env.ticks_left = 128;
+    cpu.Run();
+    Require(cpu.Regs()[0] == 15 && env.svc_calls == 3,
+            "SVC chain failed to resume into final guest block");
+    std::cout << "PASS repeated SVC 0x21 halt/resume chain\n";
+}
+
+void TestInvalidateStress() {
+    Environment env;
+    env.memory.Write32(kCode, 0xE3A00000);     // mov r0, #0
+    env.memory.Write32(kCode + 4, 0xEAFFFFFE); // b .
+    Dynarmic::A32::Jit cpu(ConservativeConfig(env));
+    InitCPU(cpu);
+    env.ticks_left = 1;
+    cpu.Step();
+    for (u32 value = 1; value <= 32; ++value) {
+        env.memory.Write32(kCode, 0xE3A00000u | value);
+        cpu.InvalidateCacheRange(kCode, 4);
+        cpu.Regs()[15] = kCode;
+        env.ticks_left = 1;
+        cpu.Step();
+        Require(cpu.Regs()[0] == value,
+                "invalidated code executed stale immediate " + std::to_string(value));
+    }
+    Require(!env.unexpected_exception && !env.memory.out_of_bounds,
+            "cache invalidation stress triggered a fault");
+    std::cout << "PASS repeated guest-code invalidation (32 patches)\n";
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -292,12 +433,17 @@ int main(int argc, char** argv) {
 #if !defined(__aarch64__) && !defined(__arm64__)
         throw std::runtime_error("This harness MUST execute on native ARM64");
 #endif
-        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate");
+        Require(argc == 2, "usage: azahar_jit_harness parity|budget|svc|invalidate|parity_long|budget_stress|step_run|svc_chain|invalidate_stress");
         const std::string name{argv[1]};
         if (name == "parity") TestParity();
         else if (name == "budget") TestBudget();
         else if (name == "svc") TestSVC();
         else if (name == "invalidate") TestInvalidate();
+        else if (name == "parity_long") TestParityLong();
+        else if (name == "budget_stress") TestBudgetStress();
+        else if (name == "step_run") TestStepRunTransition();
+        else if (name == "svc_chain") TestSVCChain();
+        else if (name == "invalidate_stress") TestInvalidateStress();
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {

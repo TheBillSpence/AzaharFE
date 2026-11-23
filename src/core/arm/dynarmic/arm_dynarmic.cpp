@@ -147,7 +147,7 @@ public:
 
     void InterpreterFallback(VAddr pc, std::size_t num_instructions) override {
         // Should never happen.
-        UNREACHABLE_MSG("InterpeterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}",
+        UNREACHABLE_MSG("InterpreterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}",
                         pc, MemoryReadCode(pc).value(), num_instructions);
     }
 
@@ -365,8 +365,8 @@ void ARM_Dynarmic::Run() {
         const unsigned n = probe - kTargetRun;
         // Step 32 returned, but step 64 was not reached on the iPhone.
         // Emit entry/exit around every instruction in that narrowed range.
-        const bool trace = n < 64 || n == 127 || n == 255 || n == 511 || n == 767 ||
-                           n == kTargetStepCount - 1;
+        const bool trace =
+            n < 64 || n == 127 || n == 255 || n == 511 || n == 767 || n == kTargetStepCount - 1;
         if (n == 0) {
             LibRetro::DisplayMessage(
                 "JIT27TRACE run80 targeted single-step probe started; 1024 instructions");

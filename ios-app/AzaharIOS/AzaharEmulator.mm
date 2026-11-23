@@ -309,6 +309,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _jitEnabled = NO;
         NSString *path = [[_saveDirectory stringByDeletingLastPathComponent]
             stringByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
+        // Preserve the previous diagnostic session so another run cannot
+        // destroy the only evidence of a JIT stall.
+        NSString *previousPath = [[path stringByDeletingPathExtension]
+            stringByAppendingString:@".previous.txt"];
+        NSFileManager *fm = NSFileManager.defaultManager;
+        if ([fm fileExistsAtPath:path]) {
+            [fm removeItemAtPath:previousPath error:NULL];
+            [fm moveItemAtPath:path toPath:previousPath error:NULL];
+        }
         _diagnosticsFile = fopen(path.fileSystemRepresentation, "w");
         if (!_diagnosticsFile) NSLog(@"Could not open AzaharJITDiagnostics.txt");
         sCurrentEmulator = self;
