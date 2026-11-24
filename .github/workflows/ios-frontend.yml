@@ -234,6 +234,8 @@ jobs:
           cp "$dylib" "$app/Frameworks/azahar_libretro.dylib"
           lipo "$app/AzaharIOS" -verify_arch arm64
           plutil -lint "$app/Info.plist"
+          test "$( /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$app/Info.plist" )" = AzaharFE
+          test -f "$app/Assets.car"
 
           mkdir -p release/Payload
           ditto "$app" release/Payload/AzaharIOS.app

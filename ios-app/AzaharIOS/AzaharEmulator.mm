@@ -762,6 +762,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     NSString *text = [NSString stringWithUTF8String:message->msg];
                     if ([text hasPrefix:@"JIT27TRACE "]) {
                         [self reportJITStage:text];
+                    } else if ([text hasPrefix:@"SHADER27 "]) {
+                        [self reportJITStage:[text substringFromIndex:9]];
                     } else if ([text hasPrefix:@"PERF27 "]) {
                         // PERF27 is diagnostic output, not a JIT state change.
                         // Persist it alongside JIT27TRACE so Settings -> Log Data

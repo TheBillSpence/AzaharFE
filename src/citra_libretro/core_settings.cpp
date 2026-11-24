@@ -1006,6 +1006,12 @@ static void ParseGraphicsOptions(void) {
         LibRetro::FetchVariable(config::graphics::use_disk_shader_cache, config::enabled) ==
         config::enabled;
 
+#ifdef IOS
+    // Prefer correctness by default. Asynchronous Vulkan shaders are opt-in.
+    Settings::values.async_shader_compilation =
+        LibRetro::FetchVariable("AzaharAsyncShaders", "off") == "on";
+#endif
+
     auto resolution = LibRetro::FetchVariable(config::graphics::resolution_factor, "1");
     Settings::values.resolution_factor = std::stoi(resolution);
 

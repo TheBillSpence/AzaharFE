@@ -2,6 +2,7 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <algorithm>
 #include <list>
 #include <numeric>
 #include <vector>
@@ -537,8 +538,26 @@ static bool do_load_game() {
     Core::System::GetInstance().GPU().ApplyPerProgramSettings(program_id);
 
     if (Settings::values.use_disk_shader_cache) {
-        Core::System::GetInstance().GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
-            false, nullptr);
+#ifdef IOS
+        if (Settings::values.graphics_api.GetValue() == Settings::GraphicsAPI::Vulkan) {
+            LibRetro::DisplayMessage("SHADER27 preparing cached Vulkan shaders");
+            Core::System::GetInstance().GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
+                false, [](auto, std::size_t current, std::size_t total, const std::string& stage) {
+                    if (current != 0 && current != total &&
+                        current % std::max<std::size_t>(1, total / 10) != 0) {
+                        return;
+                    }
+                    const auto message = "SHADER27 " + stage + " " + std::to_string(current) +
+                                         "/" + std::to_string(total);
+                    LibRetro::DisplayMessage(message.c_str());
+                });
+            LibRetro::DisplayMessage("SHADER27 cached shader preparation finished");
+        } else
+#endif
+        {
+            Core::System::GetInstance().GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
+                false, nullptr);
+        }
     }
 
     setup_memory_maps();

@@ -71,8 +71,8 @@
 - (NSArray<NSString *> *)keysForSection:(NSInteger)section {
     if (section == 1)
         return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
-                 @"citra_layout_option", @"citra_swap_screen"];
-    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads"];
+                 @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache"];
+    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharAsyncShaders"];
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -185,7 +185,9 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharJITPreset"] ? @"Combined uses Turbo and Direct RAM when JIT is detected. Advanced settings lets you choose the CPU and speed mode separately." :
+        message:[key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
+                [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
+                [key isEqual:@"AzaharJITPreset"] ? @"Automatic uses Fast dispatch when JIT is detected and falls back to the interpreter otherwise. Turbo and Direct RAM remain available under advanced settings." :
                 [key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
                 ([key isEqual:@"AzaharJITSpeed"] ? @"Turbo skips historical startup probes and uses a larger code cache; Direct RAM also enables fast page-table memory access. Both are experimental and may freeze or corrupt guest state. Relaunch to apply." :
                  ([key isEqual:@"AzaharDeepProfile"] ? @"Opt in to 5-second timing reports for CPU, JIT, HLE, PICA, software rasterization, and audio, plus a one-time CPU-only JIT benchmark. Profiling itself costs CPU time. Restart to apply." :
