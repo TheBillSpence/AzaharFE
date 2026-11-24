@@ -463,11 +463,11 @@ void ARM_Dynarmic::Run() {
         // Fast Dispatch mode. Keep cycle counting and safe-exit requests active.
         // GetTicksRemaining still respects the scheduler's next event.
         const bool video_started = LibRetro::HasSubmittedSoftwareFrame();
-        gAzaharJITBudgetCap = gAzaharJITHyper.load(std::memory_order_relaxed)
-                                  ? HyperJitCap(video_started)
-                                  : PostStartupJitCap(
-                                        video_started,
-                                        gAzaharJITFastDispatch.load(std::memory_order_relaxed));
+        gAzaharJITBudgetCap =
+            gAzaharJITHyper.load(std::memory_order_relaxed)
+                ? HyperJitCap(video_started)
+                : PostStartupJitCap(video_started,
+                                    gAzaharJITFastDispatch.load(std::memory_order_relaxed));
         jit->Run();
         return;
     }
@@ -815,13 +815,16 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Startup probes isolate first-instruction and full-dispatch failures.
     // Fastmem and the compiled exclusive monitor are retained.
     char optimization_status[200];
-    std::snprintf(optimization_status, sizeof(optimization_status),
-                  "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s startup=%s",
-                  jit_mode.c_str(), fastmem_mapped ? "guarded 4GiB fastmem" :
-                                                      config.page_table ? "page table" : "callbacks",
-                  config.code_cache_size / (1024 * 1024), hyper_mode ? "full deadline" : "capped",
-                  config.unsafe_optimizations ? "on" : "off",
-                  IOSJitUseStartupProbes(jit_mode) ? "probes" : "direct");
+    std::snprintf(
+        optimization_status, sizeof(optimization_status),
+        "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s startup=%s",
+        jit_mode.c_str(),
+        fastmem_mapped      ? "guarded 4GiB fastmem"
+        : config.page_table ? "page table"
+                            : "callbacks",
+        config.code_cache_size / (1024 * 1024), hyper_mode ? "full deadline" : "capped",
+        config.unsafe_optimizations ? "on" : "off",
+        IOSJitUseStartupProbes(jit_mode) ? "probes" : "direct");
     LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {
@@ -839,8 +842,8 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
 #ifdef IOS
     char allocation[160];
     std::snprintf(allocation, sizeof(allocation),
-                  "JIT27TRACE allocating JIT core=%u mapped=%u cache=%zu MiB",
-                  GetID(), static_cast<unsigned>(current_page_table != nullptr),
+                  "JIT27TRACE allocating JIT core=%u mapped=%u cache=%zu MiB", GetID(),
+                  static_cast<unsigned>(current_page_table != nullptr),
                   config.code_cache_size / (1024 * 1024));
     LibRetro::DisplayMessage(allocation);
     const auto allocation_started = std::chrono::steady_clock::now();
@@ -851,8 +854,9 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     std::snprintf(allocation, sizeof(allocation),
                   "JIT27TRACE JIT allocation returned core=%u cache=%zu MiB elapsed=%.1f ms",
                   GetID(), config.code_cache_size / (1024 * 1024),
-                  std::chrono::duration<double, std::milli>(
-                      std::chrono::steady_clock::now() - allocation_started).count());
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                            allocation_started)
+                      .count());
     LibRetro::DisplayMessage(allocation);
 #endif
     return created_jit;

@@ -203,8 +203,8 @@ bool CopyOutput(unsigned width, unsigned height) {
             state.copy_pending = true;
             // A driver stall must not trap the frame loop in an infinite fence wait.
             constexpr std::uint64_t kReadbackTimeoutNs = 2'000'000'000ULL;
-            const auto waited = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE,
-                                               kReadbackTimeoutNs);
+            const auto waited =
+                vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, kReadbackTimeoutNs);
             result = waited == VK_SUCCESS;
             state.copy_pending = waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST;
             state.device_failed = !result;

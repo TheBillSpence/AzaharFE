@@ -538,8 +538,8 @@ static bool do_load_game() {
                         current % std::max<std::size_t>(1, total / 10) != 0) {
                         return;
                     }
-                    const auto message = "SHADER27 " + stage + " " + std::to_string(current) +
-                                         "/" + std::to_string(total);
+                    const auto message = "SHADER27 " + stage + " " + std::to_string(current) + "/" +
+                                         std::to_string(total);
                     LibRetro::DisplayMessage(message.c_str());
                 });
             LibRetro::DisplayMessage("SHADER27 cached shader preparation finished");

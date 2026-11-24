@@ -48,9 +48,15 @@ public:
     IOSFastmemArena(const IOSFastmemArena&) = delete;
     IOSFastmemArena& operator=(const IOSFastmemArena&) = delete;
 
-    bool Available() const { return base != 0; }
-    std::uintptr_t Base() const { return base; }
-    std::uintptr_t Guard() const { return reinterpret_cast<std::uintptr_t>(valid.data()); }
+    bool Available() const {
+        return base != 0;
+    }
+    std::uintptr_t Base() const {
+        return base;
+    }
+    std::uintptr_t Guard() const {
+        return reinterpret_cast<std::uintptr_t>(valid.data());
+    }
 
     void Invalidate(std::size_t guest_page) {
         if (!base) {
@@ -92,8 +98,8 @@ public:
             if (!source) {
                 // Drop an obsolete alias rather than retaining freed backing pages.
                 if (aliased[group] &&
-                    mmap(reinterpret_cast<void*>(base + group * HostPage), HostPage,
-                         PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
+                    mmap(reinterpret_cast<void*>(base + group * HostPage), HostPage, PROT_NONE,
+                         MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
                     aliased[group] = 0;
                 }
                 ++i;
@@ -109,13 +115,13 @@ public:
             vm_address_t target = static_cast<vm_address_t>(base + group * HostPage);
             const auto expected = target;
             vm_prot_t current = 0, maximum = 0;
-            const auto result = vm_remap(mach_task_self(), &target, size, 0,
-                                         VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
-                                         static_cast<vm_address_t>(source), FALSE,
-                                         &current, &maximum, VM_INHERIT_NONE);
+            const auto result =
+                vm_remap(mach_task_self(), &target, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+                         mach_task_self(), static_cast<vm_address_t>(source), FALSE, &current,
+                         &maximum, VM_INHERIT_NONE);
             if (result == KERN_SUCCESS && target == expected &&
-                vm_protect(mach_task_self(), target, size, FALSE,
-                           VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS) {
+                vm_protect(mach_task_self(), target, size, FALSE, VM_PROT_READ | VM_PROT_WRITE) ==
+                    KERN_SUCCESS) {
                 for (auto k = i; k < end; ++k) {
                     valid[pending[k]] = 1;
                     aliased[pending[k]] = 1;
@@ -139,8 +145,8 @@ private:
     // Verify that the kernel creates a writable shared alias, not a copy.
     // Use scratch RAM so this probe never changes game data.
     bool ProbeAlias() {
-        void* scratch = mmap(nullptr, HostPage, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANON, -1, 0);
+        void* scratch =
+            mmap(nullptr, HostPage, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (scratch == MAP_FAILED) {
             return false;
         }
@@ -148,13 +154,13 @@ private:
         *original = 0x12345678;
         vm_address_t target = static_cast<vm_address_t>(base);
         vm_prot_t current = 0, maximum = 0;
-        bool okay = vm_remap(mach_task_self(), &target, HostPage, 0,
-                             VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(),
-                             reinterpret_cast<vm_address_t>(scratch), FALSE,
-                             &current, &maximum, VM_INHERIT_NONE) == KERN_SUCCESS &&
-                    target == base &&
-                    vm_protect(mach_task_self(), target, HostPage, FALSE,
-                               VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
+        bool okay =
+            vm_remap(mach_task_self(), &target, HostPage, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+                     mach_task_self(), reinterpret_cast<vm_address_t>(scratch), FALSE, &current,
+                     &maximum, VM_INHERIT_NONE) == KERN_SUCCESS &&
+            target == base &&
+            vm_protect(mach_task_self(), target, HostPage, FALSE, VM_PROT_READ | VM_PROT_WRITE) ==
+                KERN_SUCCESS;
         if (okay) {
             auto* alias = reinterpret_cast<volatile std::uint32_t*>(target);
             okay = *alias == 0x12345678;
@@ -165,7 +171,8 @@ private:
         }
         munmap(scratch, HostPage);
         return mmap(reinterpret_cast<void*>(base), HostPage, PROT_NONE,
-                    MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED && okay;
+                    MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED &&
+               okay;
     }
 
     static std::uintptr_t Source(const std::array<std::uint8_t*, GuestPages>& pages,

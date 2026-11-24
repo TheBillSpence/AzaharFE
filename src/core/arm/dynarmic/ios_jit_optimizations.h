@@ -38,8 +38,9 @@ constexpr std::size_t IOSJitCacheSize(std::string_view mode) {
 
 constexpr std::size_t IOSJitCoreCacheSize(std::string_view mode, bool mapped, unsigned core) {
     constexpr std::size_t MiB = 1024 * 1024;
-    return !mapped ? 16 * MiB : core == 0 ? IOSJitCacheSize(mode)
-                                          : std::min(IOSJitCacheSize(mode), 32 * MiB);
+    return !mapped     ? 16 * MiB
+           : core == 0 ? IOSJitCacheSize(mode)
+                       : std::min(IOSJitCacheSize(mode), 32 * MiB);
 }
 
 // Mode selection affects only newly constructed JITs. Never hot-patch code.
