@@ -56,6 +56,7 @@ static std::atomic<bool> gAzaharJITStartupProbesComplete{false};
 static std::atomic<bool> gAzaharJITFastDispatch{false};
 // Opt-in experiment: skip the obsolete startup probes after the host spinlock fix.
 static std::atomic<bool> gAzaharJITTurboStartup{false};
+static std::atomic<bool> gAzaharJITHyper{false};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
@@ -376,6 +377,7 @@ ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_,
         gAzaharJITStartupProbesComplete.store(false, std::memory_order_relaxed);
         gAzaharJITFastDispatch.store(false, std::memory_order_relaxed);
         gAzaharJITTurboStartup.store(false, std::memory_order_relaxed);
+        gAzaharJITHyper.store(false, std::memory_order_relaxed);
         gAzaharJITFullRunStarted.store(false, std::memory_order_relaxed);
     }
 #endif
@@ -402,7 +404,10 @@ void ARM_Dynarmic::Run() {
         // Experimental direct startup: maintain timer limits and the JIT halt
         // bridge. Only the obsolete instruction-by-instruction probes are skipped.
         const bool first_run = !gAzaharJITFullRunStarted.exchange(true, std::memory_order_relaxed);
-        gAzaharJITBudgetCap = PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame(), true);
+        const bool video_started = LibRetro::HasSubmittedSoftwareFrame();
+        gAzaharJITBudgetCap = gAzaharJITHyper.load(std::memory_order_relaxed)
+                                  ? HyperJitCap(video_started)
+                                  : PostStartupJitCap(video_started, true);
         if (first_run)
             LibRetro::DisplayMessage("JIT27TRACE turbo first full Run entered");
         jit->Run();
@@ -719,8 +724,10 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
 #ifdef IOS
     // Larger code cache is opt-in because iOS TXM allocation may fail.
     const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "fast");
-    const bool turbo_mode = jit_mode == "turbo" || jit_mode == "direct";
-    config.code_cache_size = (turbo_mode ? 32 : 16) * 1024 * 1024;
+    const bool turbo_mode = IOSJitSkipProbes(jit_mode);
+    const bool hyper_mode = IOSJitHyper(jit_mode);
+    config.code_cache_size = IOSJitCacheSize(jit_mode);
+    config.unsafe_optimizations = IOSJitRelaxedFP(jit_mode);
     // Build #18 confirmed 512 generated guest instructions execute correctly,
     // but full jit->Run() never returns from a tight PC 0x00100034..0x3c loop.
     // Disable direct block linking, return-stack prediction and fast dispatch
@@ -729,20 +736,26 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Fast Dispatch remains the default; Turbo and Direct RAM are opt-in.
     gAzaharJITFastDispatch.store(jit_mode == "fast" || turbo_mode, std::memory_order_relaxed);
     gAzaharJITTurboStartup.store(turbo_mode, std::memory_order_relaxed);
+    gAzaharJITHyper.store(hyper_mode, std::memory_order_relaxed);
     config.optimizations = SelectIOSJitOptimizations(config.optimizations, jit_mode);
-    if (jit_mode == "direct" && current_page_table) {
+    if (IOSJitDirectMemory(jit_mode) && current_page_table) {
         // Experimental mapped-RAM fast path. Unmapped regions and exclusive
         // accesses continue to use the existing memory system callbacks.
         config.page_table = &current_page_table->GetPointerArray();
+        // Direct accesses spanning discontiguous guest pages must use callbacks.
+        config.detect_misaligned_access_via_page_table = 16 | 32 | 64;
+        config.only_detect_misalignment_via_page_table_on_page_boundary = true;
     }
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct
     // memory accesses from the rest of the iOS JIT. Loads and stores then use
     // the existing MemorySystem callbacks, including exclusive accesses.
-    char optimization_status[128];
+    char optimization_status[200];
     std::snprintf(optimization_status, sizeof(optimization_status),
-                  "JIT27TRACE JIT optimization mode=%s; guest memory %s", jit_mode.c_str(),
-                  config.page_table ? "page table" : "callbacks");
+                  "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s",
+                  jit_mode.c_str(), config.page_table ? "page table" : "callbacks",
+                  config.code_cache_size / (1024 * 1024), hyper_mode ? "full deadline" : "capped",
+                  config.unsafe_optimizations ? "on" : "off");
     LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {
@@ -835,7 +848,8 @@ std::string RunIOSJitMicrobenchmark(std::string_view mode) {
         MicrobenchmarkCallbacks callbacks;
         Dynarmic::A32::UserConfig config;
         config.callbacks = &callbacks;
-        config.code_cache_size = 16 * 1024 * 1024;
+        config.code_cache_size = IOSJitCacheSize(mode);
+        config.unsafe_optimizations = IOSJitRelaxedFP(mode);
         config.enable_cycle_counting = true;
         config.always_little_endian = true;
         config.optimizations = SelectIOSJitOptimizations(config.optimizations, mode);

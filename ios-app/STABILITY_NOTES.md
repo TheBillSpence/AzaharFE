@@ -17,3 +17,6 @@ Based on the successful 1.0.0 / build 62 source, not a replacement of the origin
 
 ## On-device acceptance tests
 Use the same ROM and scene at native 1x with profiling off. Test interpreter and Fast dispatch, then Vulkan if desired. Capture 60 seconds of FPS/core run/readback diagnostics. Play until audio is audible, suspend/resume five times, open/close Settings, switch audio route, stop/relaunch, and verify save persistence. Compare first Vulkan launch with second launch and shader progress. Check all touch controls, held simultaneous buttons and controller pairing. Do not publish 1.0.1 as stable until these are verified.
+
+## Hyper JIT experiment (unreleased)
+Automatic preset on ios-jit-experiment now uses Hyper: skips obsolete startup probes, direct page-table accesses (with page-crossing fallback), 64 MiB code cache per JIT, 65,536 startup ticks and the actual scheduler deadline after accepted video. Hyper + relaxed FP enables only three Dynarmic approximate FP flags. Cycle counting and global exclusive monitor stay enabled. Compare against Fast and Direct RAM at identical graphics settings. Cache allocation can increase memory pressure and longer runs can increase stop latency. Back up saves; not a release candidate.

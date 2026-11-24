@@ -6,7 +6,8 @@ int main() {
     @autoreleasepool {
         NSURL *game = [NSURL fileURLWithPath:@"/Ocarina.3ds"];
         assert([AZLaunchOptions(game)[@"AzaharJITPreset"] isEqual:@"combined"]);
-        assert([AZLaunchOptions(game)[@"AzaharJITSpeed"] isEqual:@"fast"]);
+        assert([AZLaunchOptions(game)[@"AzaharJITSpeed"] isEqual:@"hyper"]);
+        assert([AZChoices(@"AzaharJITSpeed") containsObject:@"hyperfp"]);
         assert([AZLaunchOptions(game)[@"citra_use_disk_shader_cache"] isEqual:@"enabled"]);
         assert([AZLaunchOptions(game)[@"AzaharAsyncShaders"] isEqual:@"off"]);
         AZSetValue(@"citra_use_disk_shader_cache", @"disabled", game);

@@ -437,21 +437,23 @@ auto ModeConfig(Environment& env, const std::string& mode, PageTable& pages) {
     auto config = ConservativeConfig(env);
     config.optimizations = Core::SelectIOSJitOptimizations(
         Dynarmic::A32::UserConfig{}.optimizations, mode);
-    if (mode == "turbo" || mode == "direct")
-        config.code_cache_size = 32 * 1024 * 1024;
-    if (mode == "direct") {
+    config.code_cache_size = Core::IOSJitCacheSize(mode);
+    config.unsafe_optimizations = Core::IOSJitRelaxedFP(mode);
+    if (Core::IOSJitDirectMemory(mode)) {
         // Map only the active RAM data page; missing pages use callbacks.
         pages = std::make_unique<std::array<u8*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>>();
         pages->fill(nullptr);
         (*pages)[kData >> Dynarmic::A32::UserConfig::PAGE_BITS] =
             env.memory.bytes.data() + kData;
         config.page_table = pages.get();
+        config.detect_misaligned_access_via_page_table = 16 | 32 | 64;
+        config.only_detect_misalignment_via_page_table_on_page_boundary = true;
     }
     return config;
 }
 
 void TestOptimizationMode(const std::string& mode) {
-    Require(mode == "linked" || mode == "fast" || mode == "turbo" || mode == "direct",
+    Require(mode == "linked" || mode == "fast" || Core::IOSJitSkipProbes(mode),
             "unknown speed preset");
     Environment env;
     WriteActiveLoop(env.memory);
@@ -469,9 +471,21 @@ void TestOptimizationMode(const std::string& mode) {
                        u64{16384}}) {
         RunActiveBudget(cpu, env, reference, budget);
     }
-    if (mode == "fast" || mode == "turbo" || mode == "direct") {
+    if (mode == "fast" || Core::IOSJitSkipProbes(mode)) {
         // Stress the same high budget selected for on-device Fast Dispatch.
         RunActiveBudget(cpu, env, reference, Core::PostStartupJitCap(true, true));
+    }
+    if (Core::IOSJitHyper(mode)) {
+        Require(Core::HyperJitCap(false) == 65536, "hyper startup budget");
+        Require(Core::LimitJitBudget(1100000, Core::HyperJitCap(true)) == 1100000,
+                "hyper scheduler deadline was truncated");
+        Require(Core::LimitJitBudget(-1, Core::HyperJitCap(true)) == 0,
+                "hyper ignored expired deadline");
+        Require(config.code_cache_size == 64 * 1024 * 1024 && config.page_table,
+                "hyper config does not match device");
+        Require(!config.HasOptimization(Dynarmic::OptimizationFlag::Unsafe_IgnoreGlobalMonitor),
+                "exclusive monitor must remain enabled");
+        RunActiveBudget(cpu, env, reference, 1100000);
     }
     for (unsigned i = 0; i < 16; ++i) {
         env.ticks_left = 1;
@@ -607,6 +621,8 @@ int main(int argc, char** argv) {
         else if (name == "opt_fast") TestOptimizationMode("fast");
         else if (name == "opt_turbo") TestOptimizationMode("turbo");
         else if (name == "opt_direct") TestOptimizationMode("direct");
+        else if (name == "opt_hyper") TestOptimizationMode("hyper");
+        else if (name == "opt_hyperfp") TestOptimizationMode("hyperfp");
         else if (name == "microbench") TestIOSMicrobenchmarkFixture();
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;
