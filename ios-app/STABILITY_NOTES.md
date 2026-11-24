@@ -26,3 +26,6 @@ The automatic experimental preset now requests 128 MiB per Hyper/fastmem JIT and
 
 ## Build 69 device freeze: retain first-run diagnostics
 The iPhone reported successful 128 MiB allocations and 389 mapped host groups (6224 KiB), then stalled after first code fetch at 0x00100000 with no completed scheduler slice. This does not identify the root cause. Hyper and Fastmem now run the previous 512 single-step probes, staged Run budgets and targeted startup probes before the full deadline policy. Null page-table JITs reserve only 16 MiB, while game address spaces retain 128 MiB. Initial translation opcode and STREX callback traces provide more precise device evidence. The guarded fastmem emitter and compiled exclusive monitor are unchanged; actual gameplay must be retested.
+
+## Device allocation and benchmark follow-up
+Device reached first software frame with guarded fastmem, then stopped at the optional benchmark. A second launch stopped during fourth mapped JIT allocation. Remove synthetic benchmark invocation from retro_run; retain live profiling and native harness. Cap secondary mapped JITs at 32 MiB, preserve primary 128 MiB and empty 16 MiB. Log core, mapping, cache and elapsed allocation time. Root cause not yet confirmed on device.

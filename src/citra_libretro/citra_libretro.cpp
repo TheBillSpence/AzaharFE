@@ -37,7 +37,6 @@
 #include <chrono>
 #include <cstdio>
 #include "citra_libretro/ios_perf_profile.h"
-#include "core/arm/dynarmic/ios_jit_microbench.h"
 #endif
 
 #include "common/arch.h"
@@ -98,7 +97,6 @@ extern "C" bool azahar_ios_vk_game_loaded() {
 #endif
 #ifdef IOS
 static AzaharProfile::Clock::time_point gAzaharProfileWindow;
-static bool gAzaharBenchPending = false;
 #endif
 
 void retro_init() {
@@ -387,13 +385,7 @@ void retro_run() {
     if (trace_jit_first_frame) {
         LibRetro::DisplayMessage("JIT27TRACE video frame submitted");
     }
-    if (gAzaharBenchPending && LibRetro::HasSubmittedSoftwareFrame()) {
-        gAzaharBenchPending = false;
-        LibRetro::DisplayMessage("PERF27 starting optional on-device CPU-only JIT benchmark");
-        const auto result =
-            Core::RunIOSJitMicrobenchmark(LibRetro::FetchVariable("AzaharJITSpeed", "fast"));
-        LibRetro::DisplayMessage(result.c_str());
-    }
+    // Keep live profiling separate from synthetic JIT benchmarks.
     if (AzaharProfile::Enabled()) {
         const auto now = AzaharProfile::Clock::now();
         const double seconds = std::chrono::duration<double>(now - gAzaharProfileWindow).count();
@@ -496,7 +488,6 @@ static bool do_load_game() {
     LibRetro::ResetSubmittedSoftwareFrame();
     AzaharProfile::Configure(LibRetro::FetchVariable("AzaharDeepProfile", "off") == "on");
     gAzaharProfileWindow = AzaharProfile::Clock::now();
-    gAzaharBenchPending = AzaharProfile::Enabled() && LibRetro::CanUseJIT();
 #endif
     const Core::System::ResultStatus load_result{
         Core::System::GetInstance().Load(*emu_instance->emu_window, LibRetro::settings.file_path)};

@@ -516,6 +516,16 @@ void TestGuardedFastmem() {
     guards->fill(0);
     (*guards)[0] = 1;
     Require(Core::IOSJitUseStartupProbes("fastmem"), "fastmem startup probes required");
+    Require(Core::IOSJitCoreCacheSize("fastmem", false, 0) == 16 * 1024 * 1024,
+            "empty address space cache");
+    Require(Core::IOSJitCoreCacheSize("fastmem", true, 0) == 128 * 1024 * 1024,
+            "primary game core cache");
+    for (unsigned id = 1; id < 4; ++id) {
+        Require(Core::IOSJitCoreCacheSize("fastmem", true, id) == 32 * 1024 * 1024,
+                "secondary game core cache");
+    }
+    Require(Core::IOSJitCoreCacheSize("safe", true, 1) == 16 * 1024 * 1024,
+            "do not enlarge smaller presets");
     auto config = ConservativeConfig(env);
     config.code_cache_size = Core::IOSJitCacheSize("fastmem");
     config.fastmem_pointer = reinterpret_cast<std::uintptr_t>(mapping);

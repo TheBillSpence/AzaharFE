@@ -3,8 +3,9 @@
 
 #pragma once
 
-#include <string_view>
+#include <algorithm>
 #include <cstddef>
+#include <string_view>
 
 #include <dynarmic/interface/optimization_flags.h>
 
@@ -33,6 +34,12 @@ constexpr bool IOSJitTrueFastmem(std::string_view mode) {
 }
 constexpr std::size_t IOSJitCacheSize(std::string_view mode) {
     return (IOSJitHyper(mode) ? 128 : IOSJitSkipProbes(mode) ? 32 : 16) * 1024 * 1024;
+}
+
+constexpr std::size_t IOSJitCoreCacheSize(std::string_view mode, bool mapped, unsigned core) {
+    constexpr std::size_t MiB = 1024 * 1024;
+    return !mapped ? 16 * MiB : core == 0 ? IOSJitCacheSize(mode)
+                                          : std::min(IOSJitCacheSize(mode), 32 * MiB);
 }
 
 // Mode selection affects only newly constructed JITs. Never hot-patch code.

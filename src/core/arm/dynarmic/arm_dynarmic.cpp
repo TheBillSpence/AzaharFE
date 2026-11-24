@@ -785,7 +785,7 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     const bool hyper_mode = IOSJitHyper(jit_mode);
     // Initial address-space-less cores do not need the full game code cache.
     // Build 69 reserved four 128 MiB caches before mapping the game process.
-    config.code_cache_size = current_page_table ? IOSJitCacheSize(jit_mode) : 16 * 1024 * 1024;
+    config.code_cache_size = IOSJitCoreCacheSize(jit_mode, current_page_table != nullptr, GetID());
     config.unsafe_optimizations = IOSJitRelaxedFP(jit_mode);
     // Build #18 confirmed 512 generated guest instructions execute correctly,
     // but full jit->Run() never returns from a tight PC 0x00100034..0x3c loop.
@@ -837,12 +837,23 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.global_monitor = &exclusive_monitor.monitor;
 
 #ifdef IOS
-    LibRetro::DisplayMessage("JIT27TRACE Dynarmic::MakeJit allocating code cache");
+    char allocation[160];
+    std::snprintf(allocation, sizeof(allocation),
+                  "JIT27TRACE allocating JIT core=%u mapped=%u cache=%zu MiB",
+                  GetID(), static_cast<unsigned>(current_page_table != nullptr),
+                  config.code_cache_size / (1024 * 1024));
+    LibRetro::DisplayMessage(allocation);
+    const auto allocation_started = std::chrono::steady_clock::now();
     AzaharProfile::Scope jit_init_profile{AzaharProfile::Section::JITInitialization};
 #endif
     auto created_jit = std::make_unique<Dynarmic::A32::Jit>(config);
 #ifdef IOS
-    LibRetro::DisplayMessage("JIT27TRACE Dynarmic::MakeJit returned");
+    std::snprintf(allocation, sizeof(allocation),
+                  "JIT27TRACE JIT allocation returned core=%u cache=%zu MiB elapsed=%.1f ms",
+                  GetID(), config.code_cache_size / (1024 * 1024),
+                  std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - allocation_started).count());
+    LibRetro::DisplayMessage(allocation);
 #endif
     return created_jit;
 }
