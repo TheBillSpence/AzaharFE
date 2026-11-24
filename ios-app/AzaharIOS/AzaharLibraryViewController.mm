@@ -92,14 +92,19 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     CGRect b = self.bounds;
     const CGFloat diameter = MIN(b.size.width, b.size.height) - 4;
     CGPoint c = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
-    [AZPanel() setFill];
-    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x-diameter/2, c.y-diameter/2,
-                                                       diameter, diameter)] fill];
+    UIColor *rim = [UIColor colorWithWhite:0.75 alpha:0.52];
+    UIBezierPath *base = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x-diameter/2, c.y-diameter/2, diameter, diameter)];
+    [[UIColor colorWithWhite:0.09 alpha:0.95] setFill];
+    [base fill];
+    [rim setStroke]; base.lineWidth = 1.5; [base stroke];
+    UIBezierPath *inner = [UIBezierPath bezierPathWithOvalInRect:CGRectInset(base.bounds, 6, 6)];
+    [[UIColor colorWithWhite:0.28 alpha:0.75] setStroke]; inner.lineWidth = 1; [inner stroke];
     const CGFloat thumb = diameter * 0.46;
     const CGFloat travel = (diameter - thumb) / 2;
-    [AZBlue() setFill];
-    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x + self.deflection.x * travel - thumb/2,
-        c.y + self.deflection.y * travel - thumb/2, thumb, thumb)] fill];
+    UIBezierPath *knob = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(
+        c.x + self.deflection.x * travel - thumb/2, c.y + self.deflection.y * travel - thumb/2, thumb, thumb)];
+    [[UIColor colorWithWhite:0.65 alpha:1] setFill]; [knob fill];
+    [[UIColor colorWithWhite:0.92 alpha:0.7] setStroke]; knob.lineWidth = 1.5; [knob stroke];
 }
 - (void)moveStick:(UITouch *)touch {
     CGPoint p = [touch locationInView:self];
@@ -124,6 +129,63 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 - (void)endTracking:(UITouch *)touch withEvent:(UIEvent *)event { [self centerStick]; }
 - (void)cancelTrackingWithEvent:(UIEvent *)event { [self centerStick]; }
+@end
+
+// Original handheld-inspired controls: separate diamond and cross clusters,
+// tactile pressed states and unobtrusive graphite styling.
+@interface AZPadButton : UIButton
+@property (nonatomic) BOOL roundCap;
+@end
+@implementation AZPadButton
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.layer.cornerRadius = self.roundCap ? MIN(self.bounds.size.width, self.bounds.size.height) / 2 : 8;
+}
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.backgroundColor = highlighted ? [UIColor colorWithWhite:0.58 alpha:1] :
+        [UIColor colorWithWhite:0.23 alpha:0.97];
+    self.layer.borderColor = [UIColor colorWithWhite:highlighted ? 0.94 : 0.55 alpha:0.85].CGColor;
+    self.transform = highlighted ? CGAffineTransformMakeScale(0.94, 0.94) : CGAffineTransformIdentity;
+}
+@end
+
+@interface AZControllerDeck : UIView
+@property (nonatomic, strong) AZCirclePad *stick;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, AZPadButton *> *buttons;
+@end
+@implementation AZControllerDeck
+- (void)place:(unsigned)identifier x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h {
+    AZPadButton *button = self.buttons[@(identifier)];
+    button.frame = CGRectMake(x-w/2, y-h/2, w, h);
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    const CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    const CGFloat left = w * 0.19, right = w * 0.81;
+    const CGFloat face = MIN(40, w * 0.115), step = face + 2;
+    const CGFloat dpad = MIN(28, w * 0.08);
+    const CGFloat stickSize = MIN(62, h * 0.31);
+    self.stick.frame = CGRectMake(left-stickSize/2, h*0.36-stickSize/2, stickSize, stickSize);
+    const CGFloat shoulder = MIN(73, w*0.21);
+    [self place:RETRO_DEVICE_ID_JOYPAD_L x:w*0.13 y:h*0.09 w:shoulder h:29];
+    [self place:RETRO_DEVICE_ID_JOYPAD_L2 x:w*0.37 y:h*0.09 w:shoulder h:29];
+    [self place:RETRO_DEVICE_ID_JOYPAD_R2 x:w*0.63 y:h*0.09 w:shoulder h:29];
+    [self place:RETRO_DEVICE_ID_JOYPAD_R x:w*0.87 y:h*0.09 w:shoulder h:29];
+    const CGFloat cross = h*0.76;
+    [self place:RETRO_DEVICE_ID_JOYPAD_UP x:left y:cross-dpad w:dpad h:dpad];
+    [self place:RETRO_DEVICE_ID_JOYPAD_DOWN x:left y:cross+dpad w:dpad h:dpad];
+    [self place:RETRO_DEVICE_ID_JOYPAD_LEFT x:left-dpad y:cross w:dpad h:dpad];
+    [self place:RETRO_DEVICE_ID_JOYPAD_RIGHT x:left+dpad y:cross w:dpad h:dpad];
+    const CGFloat diamond = h*0.56;
+    [self place:RETRO_DEVICE_ID_JOYPAD_X x:right y:diamond-step w:face h:face];
+    [self place:RETRO_DEVICE_ID_JOYPAD_B x:right y:diamond+step w:face h:face];
+    [self place:RETRO_DEVICE_ID_JOYPAD_Y x:right-step y:diamond w:face h:face];
+    [self place:RETRO_DEVICE_ID_JOYPAD_A x:right+step y:diamond w:face h:face];
+    const CGFloat menuWidth = MIN(54, w*0.14);
+    [self place:RETRO_DEVICE_ID_JOYPAD_SELECT x:w*0.41 y:h*0.87 w:menuWidth h:24];
+    [self place:RETRO_DEVICE_ID_JOYPAD_START x:w*0.57 y:h*0.87 w:menuWidth h:24];
+}
 @end
 
 @interface AzaharGameViewController : UIViewController <AzaharEmulatorDelegate, UIAdaptivePresentationControllerDelegate>
@@ -152,7 +214,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [super viewDidLoad];
     // Keep long ROM filenames from competing with the navigation back button.
     self.title = self.game.lastPathComponent.stringByDeletingPathExtension;
-    self.view.backgroundColor = AZNavy();
+    self.view.backgroundColor = [UIColor colorWithWhite:0.045 alpha:1];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     UIBarButtonItem *gear = [[UIBarButtonItem alloc]
@@ -190,60 +252,53 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
                                                   forAxis:UILayoutConstraintAxisVertical];
     [self.view addSubview:self.status];
 
-    UIStackView *controls = [[UIStackView alloc] init];
-    controls.axis = UILayoutConstraintAxisHorizontal;
-    controls.spacing = 8;
+    AZControllerDeck *controls = [AZControllerDeck new];
+    controls.buttons = [NSMutableDictionary new];
+    controls.translatesAutoresizingMaskIntoConstraints = NO;
+    controls.multipleTouchEnabled = YES;
+    [self.view addSubview:controls];
+
     self.circlePad = [AZCirclePad new];
     self.circlePad.backgroundColor = UIColor.clearColor;
     self.circlePad.opaque = NO;
     self.circlePad.accessibilityLabel = @"Circle Pad";
-    [controls addArrangedSubview:self.circlePad];
-    [self.circlePad.widthAnchor constraintEqualToConstant:64].active = YES;
-    UIStackView *rows = [UIStackView new];
-    rows.axis = UILayoutConstraintAxisVertical;
-    rows.distribution = UIStackViewDistributionFillEqually;
-    rows.spacing = 8;
-    [controls addArrangedSubview:rows];
-    controls.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:controls];
+    controls.stick = self.circlePad;
+    [controls addSubview:self.circlePad];
 
-    NSArray<NSArray<NSString *> *> *labels = @[
-        @[@"↑", @"↓", @"←", @"→", @"A", @"B"],
-        @[@"X", @"Y", @"L", @"R", @"Start", @"Select"]
-    ];
-    NSArray<NSArray<NSNumber *> *> *ids = @[
-        @[@(RETRO_DEVICE_ID_JOYPAD_UP), @(RETRO_DEVICE_ID_JOYPAD_DOWN),
-          @(RETRO_DEVICE_ID_JOYPAD_LEFT), @(RETRO_DEVICE_ID_JOYPAD_RIGHT),
-          @(RETRO_DEVICE_ID_JOYPAD_A), @(RETRO_DEVICE_ID_JOYPAD_B)],
-        @[@(RETRO_DEVICE_ID_JOYPAD_X), @(RETRO_DEVICE_ID_JOYPAD_Y),
-          @(RETRO_DEVICE_ID_JOYPAD_L), @(RETRO_DEVICE_ID_JOYPAD_R),
-          @(RETRO_DEVICE_ID_JOYPAD_START), @(RETRO_DEVICE_ID_JOYPAD_SELECT)]
-    ];
-
-    for (NSUInteger row = 0; row < labels.count; row++) {
-        UIStackView *stack = [[UIStackView alloc] init];
-        stack.axis = UILayoutConstraintAxisHorizontal;
-        stack.spacing = 5;
-        stack.distribution = UIStackViewDistributionFillEqually;
-        for (NSUInteger col = 0; col < labels[row].count; col++) {
-            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-            button.tag = ids[row][col].integerValue;
-            [button setTitle:labels[row][col] forState:UIControlStateNormal];
-            button.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-            button.titleLabel.adjustsFontSizeToFitWidth = YES;
-            button.titleLabel.minimumScaleFactor = 0.72;
-            button.accessibilityLabel = labels[row][col];
-            button.tintColor = UIColor.whiteColor;
-            button.backgroundColor = AZPanel();
-            button.layer.cornerRadius = 8;
-            [button addTarget:self action:@selector(press:)
-                forControlEvents:UIControlEventTouchDown];
-            [button addTarget:self action:@selector(release:)
-                forControlEvents:UIControlEventTouchUpInside |
-                    UIControlEventTouchUpOutside | UIControlEventTouchCancel];
-            [stack addArrangedSubview:button];
-        }
-        [rows addArrangedSubview:stack];
+    NSArray<NSString *> *labels = @[@"↑", @"↓", @"←", @"→", @"A", @"B", @"X", @"Y",
+        @"L", @"R", @"ZL", @"ZR", @"START", @"SELECT"];
+    NSArray<NSNumber *> *ids = @[@(RETRO_DEVICE_ID_JOYPAD_UP), @(RETRO_DEVICE_ID_JOYPAD_DOWN),
+        @(RETRO_DEVICE_ID_JOYPAD_LEFT), @(RETRO_DEVICE_ID_JOYPAD_RIGHT),
+        @(RETRO_DEVICE_ID_JOYPAD_A), @(RETRO_DEVICE_ID_JOYPAD_B),
+        @(RETRO_DEVICE_ID_JOYPAD_X), @(RETRO_DEVICE_ID_JOYPAD_Y),
+        @(RETRO_DEVICE_ID_JOYPAD_L), @(RETRO_DEVICE_ID_JOYPAD_R),
+        @(RETRO_DEVICE_ID_JOYPAD_L2), @(RETRO_DEVICE_ID_JOYPAD_R2),
+        @(RETRO_DEVICE_ID_JOYPAD_START), @(RETRO_DEVICE_ID_JOYPAD_SELECT)];
+    NSArray<UIColor *> *faceColors = @[
+        [UIColor colorWithRed:0.99 green:0.48 blue:0.44 alpha:1],
+        [UIColor colorWithRed:0.99 green:0.82 blue:0.45 alpha:1],
+        [UIColor colorWithRed:0.47 green:0.74 blue:0.99 alpha:1],
+        [UIColor colorWithRed:0.47 green:0.87 blue:0.61 alpha:1]];
+    for (NSUInteger i = 0; i < labels.count; ++i) {
+        AZPadButton *button = [[AZPadButton alloc] initWithFrame:CGRectZero];
+        button.tag = ids[i].integerValue;
+        button.roundCap = i >= 4 && i < 8;
+        [button setTitle:labels[i] forState:UIControlStateNormal];
+        [button setTitleColor:button.roundCap ? faceColors[i-4] : UIColor.whiteColor forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont monospacedSystemFontOfSize:i >= 12 ? 9 : (button.roundCap ? 18 : 13)
+                                                             weight:UIFontWeightSemibold];
+        button.titleLabel.adjustsFontSizeToFitWidth = YES;
+        button.titleLabel.minimumScaleFactor = 0.7;
+        button.accessibilityLabel = labels[i];
+        button.exclusiveTouch = NO;
+        button.layer.borderWidth = 1.3;
+        button.layer.masksToBounds = YES;
+        [button setHighlighted:NO];
+        [button addTarget:self action:@selector(press:) forControlEvents:UIControlEventTouchDown];
+        [button addTarget:self action:@selector(release:)
+         forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+        controls.buttons[ids[i]] = button;
+        [controls addSubview:button];
     }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -274,7 +329,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
         // Reserve the bottom-left safe area for the persistent build badge.
         [controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-30],
-        [controls.heightAnchor constraintEqualToConstant:96]
+        [controls.heightAnchor constraintEqualToConstant:190]
     ]];
 }
 
