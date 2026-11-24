@@ -106,9 +106,9 @@ void MouseTracker::Update(int bufferWidth, int bufferHeight,
         state |= LibRetro::CheckInput(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
     }
 
-    const bool finger = LibRetro::settings.enable_touch_touchscreen &&
-                        LibRetro::CheckInput(0, RETRO_DEVICE_POINTER, 0,
-                                             RETRO_DEVICE_ID_POINTER_PRESSED);
+    const bool finger =
+        LibRetro::settings.enable_touch_touchscreen &&
+        LibRetro::CheckInput(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED);
     state |= finger;
 
     if (state == true) {
@@ -117,9 +117,10 @@ void MouseTracker::Update(int bufferWidth, int bufferHeight,
         auto newX = static_cast<int>((pointerX + 0x7fff) / (float)(0x7fff * 2) * bufferWidth);
         auto newY = static_cast<int>((pointerY + 0x7fff) / (float)(0x7fff * 2) * bufferHeight);
 
-        if (finger || ((pointerX != 0 || pointerY != 0) &&
-                       (newX != lastMouseX || newY != lastMouseY))) {
-            if (layout.bottom_screen_enabled && (layout.IsWithinTouchscreen(newX, newY) || isPressed)) {
+        if (finger ||
+            ((pointerX != 0 || pointerY != 0) && (newX != lastMouseX || newY != lastMouseY))) {
+            if (layout.bottom_screen_enabled &&
+                (layout.IsWithinTouchscreen(newX, newY) || isPressed)) {
                 wasMoved = !isPressed || newX != lastMouseX || newY != lastMouseY;
                 lastMouseX = newX;
                 lastMouseY = newY;

@@ -1,5 +1,6 @@
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
+#import "AZAudioOutput.h"
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -100,6 +101,7 @@ static std::atomic<bool> sJITProbeFailed{false};
 @interface AzaharEmulator () {
     void *_libraryHandle;
     std::mutex _jitBridgeMutex;
+    AZAudioOutput *_audioOutput;
     void (*_requestJITHalt)(void);
     std::atomic<bool> _stopping;
     std::atomic<bool> _frameQueued;
@@ -143,11 +145,13 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&retro_load_game) _loadGame;
     decltype(&retro_unload_game) _unloadGame;
     decltype(&retro_run) _runFrame;
+    decltype(&retro_get_system_av_info) _getAVInfo;
 }
 - (BOOL)handleEnvironment:(unsigned)command data:(void *)data;
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch;
 - (void)pollInput;
+- (void)receiveAudio:(const int16_t *)data frames:(size_t)frames;
 - (int16_t)inputStateForDevice:(unsigned)device index:(unsigned)index identifier:(unsigned)identifier;
 - (void)runGameAtURL:(NSURL *)url;
 - (BOOL)startVulkanRenderer;
@@ -175,11 +179,13 @@ static void AzaharVideo(const void *data, unsigned width, unsigned height, size_
 }
 
 static void AzaharAudioSample(int16_t left, int16_t right) {
-    // Audio output is a later milestone. This prototype is silent.
+    const int16_t stereo[] = {left, right};
+    [sCurrentEmulator receiveAudio:stereo frames:1];
 }
 
 static size_t AzaharAudioBatch(const int16_t *data, size_t frames) {
-    // Return accepted frame count so the core can continue.
+    [sCurrentEmulator receiveAudio:data frames:frames];
+    // Never stall the guest when the device falls behind.
     return frames;
 }
 
@@ -312,6 +318,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     LOAD_SYMBOL(_loadGame, retro_load_game);
     LOAD_SYMBOL(_unloadGame, retro_unload_game);
     LOAD_SYMBOL(_runFrame, retro_run);
+    LOAD_SYMBOL(_getAVInfo, retro_get_system_av_info);
 #undef LOAD_SYMBOL
     return YES;
 }
@@ -362,6 +369,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [self runGameAtURL:url];
+        [_audioOutput stop];
+        _audioOutput = nil;
         {
             // No stop callback may outlive the dynamic library containing it.
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
@@ -485,7 +494,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             NSString *failure = nil;
             if (!retrySoftware && loaded) {
                 [self reportJITStage:@"6/7 Game loaded; starting first frame"];
+                struct retro_system_av_info av = {};
+                _getAVInfo(&av);
+                _audioOutput = [AZAudioOutput new];
+                if ([_audioOutput startWithSampleRate:av.timing.sample_rate]) {
+                    [self writeDiagnostic:[NSString stringWithFormat:@"Audio: stereo PCM at %.0f Hz", av.timing.sample_rate]];
+                } else {
+                    [self writeDiagnostic:@"Audio output unavailable; continuing without sound"];
+                }
                 [self runLoadedGame];
+                [_audioOutput stop];
+                _audioOutput = nil;
                 _unloadGame();
                 const auto recovery = LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo);
                 retrySoftware = recovery == LibRetro::ReadbackRecovery::RetrySoftware;
@@ -521,6 +540,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             _readbackFailures = 0;
         }
     }
+}
+
+- (void)receiveAudio:(const int16_t *)data frames:(size_t)frames {
+    if (!_stopping.load()) [_audioOutput appendSamples:data frames:frames];
 }
 
 - (BOOL)startVulkanRenderer {

@@ -65,6 +65,14 @@ jobs:
           xcodegen --version
           cmake --version
 
+      - name: Generate AzaharFE application icon
+        run: python3 ios-app/scripts/generate-app-icon.py
+
+      - name: Test stereo audio buffer
+        run: |
+          xcrun clang++ -std=c++17 -Iios-app/AzaharIOS tools/ios-input-tests/audio.cpp -o "$RUNNER_TEMP/audio-test"
+          "$RUNNER_TEMP/audio-test"
+
       - name: Generate Xcode project
         run: |
           set -euo pipefail
