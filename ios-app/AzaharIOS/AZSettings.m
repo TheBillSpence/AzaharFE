@@ -6,6 +6,7 @@
 
 @interface AZSettings () <UIDocumentPickerDelegate>
 @property (nonatomic) BOOL perGame;
+@property (nonatomic, strong) NSURL *pendingCoverGame;
 @property (nonatomic, strong) UILabel *runtimeLabel;
 @property (nonatomic, strong) NSTimer *statusTimer;
 @property (nonatomic) BOOL showAdvanced;
@@ -76,7 +77,7 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section==0) return 1;
+    if (section==0) return self.perGame && self.game && !self.sessionOptions ? 2 : 1;
     if (self.perGame && !self.game) return 0;
     if (section == 2) return 1 + (self.showAdvanced ? [self keysForSection:section].count : 0);
     return [self keysForSection:section].count;
@@ -118,10 +119,14 @@
     content.secondaryTextProperties.numberOfLines=0;
     cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
     if (self.sessionOptions) cell.accessoryType=UITableViewCellAccessoryNone;
-    if (ip.section==0 && self.perGame) {
+    if (ip.section == 0 && self.perGame && ip.row == 1) {
+        content.text = @"Cover art";
+        content.secondaryText = AZExistingCustomArtURL(self.game) ? @"Replace or remove cover" : @"Import cover";
+        content.image = [UIImage systemImageNamed:@"photo"];
+    } else if (ip.section==0 && self.perGame) {
         content.text=self.game ? self.game.lastPathComponent.stringByDeletingPathExtension : @"No game selected";
         content.textProperties.numberOfLines=3;
-        content.secondaryText=self.sessionOptions ? @"Current session" : (self.game ? @"Select game or change cover" : nil);
+        content.secondaryText=self.sessionOptions ? @"Current session" : (self.game ? @"Select game" : nil);
         content.image=self.game ? AZGameArt(self.game) : nil;
         if (!content.image) content.image=[UIImage systemImageNamed:@"gamecontroller"];
         content.imageProperties.maximumSize=CGSizeMake(96,128);
@@ -172,16 +177,16 @@
     }
     if (ip.section==0) {
         if (!self.game) return;
+        if (ip.row == 1) {
+            [self manageCoverAtIndexPath:ip];
+            return;
+        }
         UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"Game profile" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
         for (NSURL *url in self.games) {
             [menu addAction:[UIAlertAction actionWithTitle:url.lastPathComponent.stringByDeletingPathExtension style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
                 self.game=url; if (self.selectGame) self.selectGame(url); [tableView reloadData];
             }]];
         }
-        [menu addAction:[UIAlertAction actionWithTitle:@"Choose cover image…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeImage] asCopy:YES];
-            picker.delegate=self; [self presentViewController:picker animated:YES completion:nil];
-        }]];
         [self presentMenu:menu row:ip]; return;
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
@@ -216,24 +221,64 @@
     }
     [self presentMenu:menu row:ip];
 }
+- (void)chooseCoverForGame:(NSURL *)game {
+    self.pendingCoverGame = game;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeImage] asCopy:YES];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)showCoverError:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Couldn’t update cover"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)manageCoverAtIndexPath:(NSIndexPath *)ip {
+    NSURL *game = self.game;
+    if (!AZExistingCustomArtURL(game)) {
+        [self chooseCoverForGame:game];
+        return;
+    }
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Cover art"
+        message:game.lastPathComponent.stringByDeletingPathExtension preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Replace Cover" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *action) { [self chooseCoverForGame:game]; }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Remove Cover" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *action) {
+            NSError *error = nil;
+            if (!AZRemoveCustomArt(game, &error)) [self showCoverError:error.localizedDescription];
+            [self.tableView reloadData];
+        }]];
+    [self presentMenu:menu row:ip];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.pendingCoverGame = nil;
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *url=urls.firstObject; if (!url || !self.game) return;
-    BOOL scoped=[url startAccessingSecurityScopedResource];
-    CGImageSourceRef src=CGImageSourceCreateWithURL((__bridge CFURLRef)url,NULL);
-    NSDictionary *options=@{(__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
+    NSURL *game = self.pendingCoverGame;
+    self.pendingCoverGame = nil;
+    NSURL *url = urls.firstObject;
+    if (!url || !game || ![NSFileManager.defaultManager fileExistsAtPath:game.path]) return;
+    BOOL scoped = [url startAccessingSecurityScopedResource];
+    CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    NSDictionary *options = @{(__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
         (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform:@YES,
-        (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize:@720};
-    CGImageRef thumb=src ? CGImageSourceCreateThumbnailAtIndex(src,0,(__bridge CFDictionaryRef)options) : NULL;
-    NSData *jpeg=thumb ? UIImageJPEGRepresentation([UIImage imageWithCGImage:thumb],0.85) : nil;
-    BOOL saved=[jpeg writeToURL:AZCustomArtURL(self.game) options:NSDataWritingAtomic error:nil];
+        (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize:@768};
+    CGImageRef thumb = src ? CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)options) : NULL;
+    NSData *jpeg = thumb ? UIImageJPEGRepresentation([UIImage imageWithCGImage:thumb], 0.88) : nil;
     if (thumb) CGImageRelease(thumb);
     if (src) CFRelease(src);
     if (scoped) [url stopAccessingSecurityScopedResource];
-    if (saved) [self.tableView reloadData];
-    else {
-        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Couldn’t save cover" message:@"Choose another image." preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+    NSError *error = nil;
+    if ([jpeg writeToURL:AZCustomArtURL(game) options:NSDataWritingAtomic error:&error]) {
+        [self.tableView reloadData];
+    } else {
+        [self showCoverError:error.localizedDescription ?: @"Choose a valid image."];
     }
 }
 @end

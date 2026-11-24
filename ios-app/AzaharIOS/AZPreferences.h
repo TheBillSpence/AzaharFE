@@ -9,6 +9,8 @@ FOUNDATION_EXPORT UIColor *AZYellow(void);
 FOUNDATION_EXPORT void AZForgetGame(NSURL *game);
 FOUNDATION_EXPORT UIImage *_Nullable AZGameArt(NSURL *game);
 FOUNDATION_EXPORT NSURL *AZCustomArtURL(NSURL *game);
+FOUNDATION_EXPORT NSURL *_Nullable AZExistingCustomArtURL(NSURL *game);
+FOUNDATION_EXPORT BOOL AZRemoveCustomArt(NSURL *game, NSError *_Nullable *_Nullable error);
 FOUNDATION_EXPORT NSURL *AZLogURL(void);
 FOUNDATION_EXPORT NSString *AZVersion(void);
 NS_ASSUME_NONNULL_END

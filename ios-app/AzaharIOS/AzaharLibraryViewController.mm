@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#import <ImageIO/ImageIO.h>
 #import <AVFoundation/AVFoundation.h>
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
@@ -21,17 +20,8 @@ static NSURL *GamesDirectory(void) {
     return folder;
 }
 
-static NSURL *CoverURL(NSURL *game) {
-    NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
-                                                           inDomains:NSUserDomainMask].firstObject;
-    NSURL *folder = [documents URLByAppendingPathComponent:@"Covers" isDirectory:YES];
-    [NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES
-                                          attributes:nil error:NULL];
-    return [folder URLByAppendingPathComponent:[game.lastPathComponent stringByAppendingString:@".jpg"]];
-}
-
 static UIImage *CoverThumbnail(NSURL *game) {
-    UIImage *cover = [UIImage imageWithContentsOfFile:CoverURL(game).path];
+    UIImage *cover = AZGameArt(game);
     if (!cover) return nil;
     CGSize size = CGSizeMake(48, 64);
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
@@ -437,9 +427,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     AzaharEmulator *old = self.host;
     [old stop];
     if (!old) { [self maybeStartRestart]; return; }
-    __weak typeof(self) weakSelf = self;
+    __weak AzaharGameViewController *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        typeof(self) strongSelf = weakSelf;
+        AzaharGameViewController *strongSelf = weakSelf;
         if (strongSelf.restartPending && strongSelf.host == old)
             strongSelf.status.text = @"Previous session has not stopped. Use Stop to return to the library; force-close if it remains stuck.";
     });
@@ -650,125 +640,10 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (style == UITableViewCellEditingStyleDelete) {
         NSURL *url = self.games[indexPath.row];
         if ([NSFileManager.defaultManager removeItemAtURL:url error:NULL]) {
-            [NSFileManager.defaultManager removeItemAtURL:CoverURL(url) error:NULL];
             AZForgetGame(url);
         }
         [self refreshGames];
     }
-}
-@end
-
-@interface AZCovers : UITableViewController <UIDocumentPickerDelegate>
-@property (nonatomic, copy) NSArray<NSURL *> *games;
-@property (nonatomic, strong) NSURL *pendingGame;
-@property (nonatomic, copy) void (^coversChanged)(void);
-- (void)refreshCovers;
-@end
-
-@implementation AZCovers
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.tableView.backgroundColor = AZNavy();
-    self.tableView.separatorColor = [AZBlue() colorWithAlphaComponent:0.18];
-    self.tableView.rowHeight = 84;
-    [self refreshCovers];
-}
-
-- (void)refreshCovers {
-    if (!self.isViewLoaded) return;
-    self.tableView.backgroundView = self.games.count ? nil :
-        MakeLabel(@"Import a game in Library first, then add its cover here.", 16);
-    [self.tableView reloadData];
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.games.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cover"];
-    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cover"];
-    NSURL *game = self.games[indexPath.row];
-    UIImage *cover = CoverThumbnail(game);
-    cell.textLabel.text = game.lastPathComponent.stringByDeletingPathExtension;
-    cell.detailTextLabel.text = cover ? @"Tap to replace or remove cover" : @"Tap to import cover";
-    cell.textLabel.textColor = UIColor.whiteColor;
-    cell.detailTextLabel.textColor = AZBlue();
-    cell.backgroundColor = AZPanel();
-    cell.imageView.image = cover ?: [UIImage systemImageNamed:@"photo"];
-    cell.imageView.tintColor = AZBlue();
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    return cell;
-}
-
-- (void)chooseImageForGame:(NSURL *)game {
-    self.pendingGame = game;
-    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[UTTypeImage] asCopy:YES];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    [self.navigationController presentViewController:picker animated:YES completion:nil];
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSURL *game = self.games[indexPath.row];
-    if (![NSFileManager.defaultManager fileExistsAtPath:CoverURL(game).path]) {
-        [self chooseImageForGame:game];
-        return;
-    }
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:game.lastPathComponent.stringByDeletingPathExtension
-        message:@"Manage this game's cover." preferredStyle:UIAlertControllerStyleAlert];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Replace Cover" style:UIAlertActionStyleDefault
-        handler:^(UIAlertAction *action) { [self chooseImageForGame:game]; }]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Remove Cover" style:UIAlertActionStyleDestructive
-        handler:^(UIAlertAction *action) {
-            [NSFileManager.defaultManager removeItemAtURL:CoverURL(game) error:NULL];
-            [self refreshCovers];
-            if (self.coversChanged) self.coversChanged();
-        }]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:menu animated:YES completion:nil];
-}
-
-- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    self.pendingGame = nil;
-}
-
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *game = self.pendingGame;
-    self.pendingGame = nil;
-    NSURL *imageURL = urls.firstObject;
-    if (!game || !imageURL || ![NSFileManager.defaultManager fileExistsAtPath:game.path]) return;
-    BOOL scoped = [imageURL startAccessingSecurityScopedResource];
-    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)imageURL, NULL);
-    CGImageRef thumbnail = NULL;
-    if (source) {
-        NSDictionary *options = @{
-            (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
-            (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
-            (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @768
-        };
-        thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
-        CFRelease(source);
-    }
-    NSData *data = nil;
-    if (thumbnail) {
-        data = UIImageJPEGRepresentation([UIImage imageWithCGImage:thumbnail], 0.88);
-        CGImageRelease(thumbnail);
-    }
-    if (scoped) [imageURL stopAccessingSecurityScopedResource];
-    NSError *error = nil;
-    if (!data || ![data writeToURL:CoverURL(game) options:NSDataWritingAtomic error:&error]) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Cover import failed"
-            message:error.localizedDescription ?: @"Choose a valid PNG, JPEG or supported image."
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-    [self refreshCovers];
-    if (self.coversChanged) self.coversChanged();
 }
 @end
 
@@ -779,7 +654,10 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, strong) NSArray<UIViewController *> *pages;
 @property (nonatomic, strong) AzaharLibraryViewController *library;
 @property (nonatomic, strong) AZSettings *profile;
-@property (nonatomic, strong) AZCovers *covers;
+@property (nonatomic, strong) AZSettings *settings;
+@property (nonatomic, strong) UIBarButtonItem *addGameItem;
+@property (nonatomic, strong) UIBarButtonItem *jitStatusItem;
+@property (nonatomic, strong) NSTimer *jitStatusTimer;
 @property (nonatomic) NSInteger page;
 @property (nonatomic) CGFloat pageWidth;
 @end
@@ -796,12 +674,21 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     add.contentEdgeInsets = UIEdgeInsetsMake(8,14,8,14);
     add.backgroundColor = AZYellow(); add.layer.cornerRadius = 16;
     [add addTarget:self action:@selector(importGame) forControlEvents:UIControlEventTouchUpInside];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:add];
+    self.addGameItem = [[UIBarButtonItem alloc] initWithCustomView:add];
+    UILabel *jitLabel = [UILabel new];
+    jitLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    jitLabel.adjustsFontForContentSizeCategory = YES;
+    jitLabel.textColor = AZBlue();
+    self.jitStatusItem = [[UIBarButtonItem alloc] initWithCustomView:jitLabel];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jitStatusChanged:)
+        name:@"AzaharSessionStatusChanged" object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jitStatusChanged:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
 
     self.library = [[AzaharLibraryViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
     self.profile = [[AZSettings alloc] initForGame:YES];
-    self.covers = [[AZCovers alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    self.pages = @[self.library, self.profile, self.covers, [[AZSettings alloc] initForGame:NO]];
+    self.settings = [[AZSettings alloc] initForGame:NO];
+    self.pages = @[self.library, self.settings, self.profile];
     __weak AZHome *weakSelf = self;
     void (^select)(NSURL *) = ^(NSURL *game) {
         weakSelf.profile.game = game;
@@ -810,11 +697,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     };
     self.profile.selectGame = select;
     self.library.gameSelected = select;
-    self.covers.coversChanged = ^{ [weakSelf.library.tableView reloadData]; };
     self.library.libraryChanged = ^(NSArray<NSURL *> *games) {
         weakSelf.profile.games = games;
-        weakSelf.covers.games = games;
-        [weakSelf.covers refreshCovers];
         NSString *saved = [NSUserDefaults.standardUserDefaults stringForKey:@"AZSelectedGame"];
         NSURL *selected = games.firstObject;
         for (NSURL *url in games) if ([url.lastPathComponent isEqual:saved]) { selected=url; break; }
@@ -848,8 +732,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (@available(iOS 15.0, *)) self.tabs.scrollEdgeAppearance = barStyle;
     self.tabs.tintColor = AZBlue();
     self.tabs.unselectedItemTintColor = [UIColor colorWithRed:0.62 green:0.70 blue:0.81 alpha:1];
-    NSArray *names = @[@"Library", @"Game Prep", @"Covers", @"Settings"];
-    NSArray *symbols = @[@"square.grid.2x2", @"slider.horizontal.3", @"photo.on.rectangle", @"gearshape"];
+    NSArray *names = @[@"Library", @"Settings", @"Game Prep"];
+    NSArray *symbols = @[@"square.grid.2x2", @"gearshape", @"slider.horizontal.3"];
     NSMutableArray *items = [NSMutableArray array];
     for (NSInteger i=0; i<(NSInteger)names.count; ++i) {
         [items addObject:[[UITabBarItem alloc] initWithTitle:names[i] image:[UIImage systemImageNamed:symbols[i]] tag:i]];
@@ -872,11 +756,37 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self selectPage:0];
 }
 - (void)importGame { [self.library importGame]; }
+
+- (void)jitStatusChanged:(NSNotification *)notification {
+    [self refreshLibraryStatus];
+}
+- (void)refreshLibraryStatus {
+    if (self.pages[self.page] != self.library) return;
+    UILabel *label = (UILabel *)self.jitStatusItem.customView;
+    label.text = [AzaharEmulator sessionJITStatus];
+    [label sizeToFit];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self refreshLibraryStatus];
+    __weak AZHome *weakSelf = self;
+    [self.jitStatusTimer invalidate];
+    self.jitStatusTimer = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
+        if (!weakSelf) { [timer invalidate]; return; }
+        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) [weakSelf refreshLibraryStatus];
+    }];
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.jitStatusTimer invalidate];
+    self.jitStatusTimer = nil;
+}
+
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGSize size=self.pager.bounds.size;
     for (NSUInteger i=0; i<self.pages.count; ++i) {
-        CGFloat footerHeight = i==self.pages.count-1 ? self.footer.intrinsicContentSize.height+16 : 0;
+        CGFloat footerHeight = self.pages[i] == self.settings ? self.footer.intrinsicContentSize.height+16 : 0;
         self.pages[i].view.frame=CGRectMake(size.width*i,0,size.width,MAX(0,size.height-footerHeight));
     }
     self.pager.contentSize=CGSizeMake(size.width*self.pages.count,size.height);
@@ -891,8 +801,14 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.title=self.tabs.selectedItem.title;
     if ([self.pages[index] isKindOfClass:AZSettings.class])
         [((AZSettings *)self.pages[index]).tableView reloadData];
-    if (self.pages[index] == self.covers) [self.covers refreshCovers];
-    self.footer.hidden=index!=(NSInteger)self.pages.count-1;
+    BOOL isLibrary = self.pages[index] == self.library;
+    self.navigationItem.leftBarButtonItem = isLibrary ? self.addGameItem : nil;
+    self.navigationItem.rightBarButtonItem = isLibrary ? self.jitStatusItem : self.addGameItem;
+    if (isLibrary) {
+        [self.library.tableView reloadData];
+        [self refreshLibraryStatus];
+    }
+    self.footer.hidden = self.pages[index] != self.settings;
     for (NSUInteger i=0;i<self.pages.count;++i) self.pages[i].view.accessibilityElementsHidden=(NSInteger)i!=index;
 }
 - (void)tabBar:(UITabBar *)bar didSelectItem:(UITabBarItem *)item {

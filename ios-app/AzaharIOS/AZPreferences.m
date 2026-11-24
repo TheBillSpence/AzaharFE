@@ -25,9 +25,32 @@ NSURL *AZCustomArtURL(NSURL *game) {
     for (unsigned i=0; i<sizeof(digest); ++i) [hex appendFormat:@"%02x", digest[i]];
     return [dir URLByAppendingPathComponent:hex];
 }
+// Earlier Library builds stored artwork separately from per-game settings.
+static NSURL *LibraryCoverURL(NSURL *game) {
+    NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    return [[documents URLByAppendingPathComponent:@"Covers" isDirectory:YES]
+        URLByAppendingPathComponent:[game.lastPathComponent stringByAppendingString:@".jpg"]];
+}
+NSURL *AZExistingCustomArtURL(NSURL *game) {
+    for (NSURL *url in @[AZCustomArtURL(game), LibraryCoverURL(game)]) {
+        if ([NSFileManager.defaultManager fileExistsAtPath:url.path]) return url;
+    }
+    return nil;
+}
+BOOL AZRemoveCustomArt(NSURL *game, NSError **error) {
+    for (NSURL *url in @[LibraryCoverURL(game), AZCustomArtURL(game)]) {
+        NSError *failure = nil;
+        if (![NSFileManager.defaultManager removeItemAtURL:url error:&failure] &&
+            !([failure.domain isEqualToString:NSCocoaErrorDomain] && failure.code == NSFileNoSuchFileError)) {
+            if (error) *error = failure;
+            return NO;
+        }
+    }
+    return YES;
+}
 void AZForgetGame(NSURL *game) {
     AZResetGameOptions(game);
-    [NSFileManager.defaultManager removeItemAtURL:AZCustomArtURL(game) error:nil];
+    AZRemoveCustomArt(game, NULL);
 }
 
 static uint32_t Word(const uint8_t *p) {
@@ -72,7 +95,8 @@ static UIImage *ReadIcon(FILE *f) {
     return nil;
 }
 UIImage *AZGameArt(NSURL *game) {
-    UIImage *cover=[UIImage imageWithContentsOfFile:AZCustomArtURL(game).path];
+    NSURL *art = AZExistingCustomArtURL(game);
+    UIImage *cover = art ? [UIImage imageWithContentsOfFile:art.path] : nil;
     if (cover) return cover;
     FILE *f=fopen(game.fileSystemRepresentation,"rb");
     if (!f) return nil;
