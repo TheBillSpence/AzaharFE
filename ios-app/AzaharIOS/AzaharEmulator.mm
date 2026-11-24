@@ -107,6 +107,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     std::atomic<bool> _stopping;
     std::atomic<bool> _paused;
     std::atomic<uint64_t> _audioEpoch;
+    std::atomic<uint64_t> _audioRouteEpoch;
+    std::atomic<bool> _pauseAcknowledged;
     std::atomic<bool> _frameQueued;
     AZInput::State _input;
     std::atomic<bool> _jitEnabled;
@@ -262,6 +264,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (!self) return nil;
 
     _requestJITHalt = nullptr;
+    _audioRouteEpoch.store(0);
+    _pauseAcknowledged.store(false);
     _vkRenderCallback = {};
     _vkNegotiation = nullptr;
     _vkInterface = nullptr;
@@ -330,21 +334,23 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)startGameAtURL:(NSURL *)url error:(NSError **)error {
+    return [self startGameAtURL:url options:AZLaunchOptions(url) error:error];
+}
+
+- (BOOL)startGameAtURL:(NSURL *)url options:(NSDictionary<NSString *, NSString *> *)options error:(NSError **)error {
     @synchronized (AzaharEmulator.class) {
         if (sCurrentEmulator) {
             if (error) *error = [NSError errorWithDomain:@"AzaharIOS" code:3
                 userInfo:@{NSLocalizedDescriptionKey: @"The previous game is still running or stopping."}];
             return NO;
         }
-        if (![self loadLibrary:error]) return NO;
         _stopping.store(false);
         _paused.store(false);
         _audioEpoch.store(0);
         _frameQueued.store(false);
         _input.Enable(false);
         _guestRan.store(false);
-        NSDictionary *options = AZLaunchOptions(url);
-        @synchronized (self) { _gameOptions = options; }
+        @synchronized (self) { _gameOptions = [options copy]; }
         self.experimentalJITEnabled = [options[@"AzaharExperimentalJIT"] isEqual:@"on"];
         _jitPending.store(self.experimentalJITEnabled);
         _vkRenderCallback = {};
@@ -376,7 +382,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        [self runGameAtURL:url];
+        NSError *loadError = nil;
+        if ([self loadLibrary:&loadError]) {
+            [self runGameAtURL:url];
+        } else if (!_stopping.load()) {
+            NSString *message = loadError.localizedDescription ?: @"Unable to load core.";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self->_stopping.load()) [self.delegate azaharEmulatorDidFail:message];
+            });
+        }
+        [self writeDiagnostic:@"LIFECYCLE worker exiting; releasing audio and core library"];
         [self replaceAudioWithSampleRate:0];
         {
             // No stop callback may outlive the dynamic library containing it.
@@ -394,8 +409,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         dispatch_async(dispatch_get_main_queue(), ^{
             @synchronized (AzaharEmulator.class) {
                 if (sCurrentEmulator == self) sCurrentEmulator = nil;
-                [NSNotificationCenter.defaultCenter postNotificationName:@"AzaharSessionStatusChanged" object:nil];
             }
+            [NSNotificationCenter.defaultCenter postNotificationName:@"AzaharSessionStatusChanged" object:nil];
+            id<AzaharEmulatorDelegate> delegate = self.delegate;
+            if ([delegate respondsToSelector:@selector(azaharEmulatorDidFinish:)])
+                [delegate azaharEmulatorDidFinish:self];
         });
     });
     return YES;
@@ -414,9 +432,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         AzaharEmulator *host = weakHost;
         if (!host) return;
         @synchronized (AzaharEmulator.class) {
-            if (host->_playSession != session || host->_stopping.load() ||
-                !host->_waitingForFirstFrame.load()) return;
+            if (host->_playSession != session) return;
+        }
+        if (host->_stopping.load() || !host->_waitingForFirstFrame.load()) return;
+        {
             const uint64_t slices = host->_completedSlices.load();
+            if (host->_paused.load()) {
+                [host scheduleFirstFrameCheckForSession:session started:started previousSlices:slices initial:NO];
+                return;
+            }
             const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - started).count();
             [host reportJITStage:[NSString stringWithFormat:
@@ -502,8 +526,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (!retrySoftware && loaded) {
                 [self reportJITStage:@"6/7 Game loaded; starting first frame"];
                 [self runLoadedGame];
+                [self writeDiagnostic:@"LIFECYCLE stopping audio"];
                 [self replaceAudioWithSampleRate:0];
+                [self writeDiagnostic:@"LIFECYCLE unloading game"];
                 _unloadGame();
+                [self writeDiagnostic:@"LIFECYCLE game unloaded"];
                 const auto recovery = LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo);
                 retrySoftware = recovery == LibRetro::ReadbackRecovery::RetrySoftware;
                 if (recovery == LibRetro::ReadbackRecovery::ReportFailure)
@@ -512,8 +539,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 @synchronized (self) { failure = _lastMessage; }
                 if (!failure) failure = @"Azahar couldn't load this game. Check the ROM format and whether it is decrypted.";
             }
+            [self writeDiagnostic:@"LIFECYCLE deinitializing core"];
             _deinitCore();
+            [self writeDiagnostic:@"LIFECYCLE shutting down Vulkan bridge"];
             if (_vkShutdown) _vkShutdown();
+            [self writeDiagnostic:@"LIFECYCLE core and graphics teardown complete"];
             _vkInterface = nullptr;
             if (_stopping.load()) break;
             if (failure) {
@@ -551,11 +581,20 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (_stopping.load()) return;
     if (_paused.exchange(paused != NO) != (paused != NO)) {
         _audioEpoch.fetch_add(1);
-        if (paused) _input.Enable(false);
+        if (paused) {
+            _input.Enable(false);
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                if (self->_paused.load() && !self->_stopping.load())
+                    [self requestJITHalt];
+            });
+        }
     }
 }
 
-- (void)refreshAudioRoute { _audioEpoch.fetch_add(1); }
+- (void)refreshAudioRoute {
+    _audioRouteEpoch.fetch_add(1);
+    _audioEpoch.fetch_add(1);
+}
 
 // Only the emulation worker manages the audio session and queue.
 - (void)replaceAudioWithSampleRate:(double)rate {
@@ -596,6 +635,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     const double fpsTarget = std::isfinite(av.timing.fps) && av.timing.fps >= 1 && av.timing.fps <= 240 ? av.timing.fps : 60.0;
     const auto framePeriod = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / fpsTarget));
     uint64_t audioEpoch = UINT64_MAX;
+    uint64_t routeEpoch = UINT64_MAX;
     auto nextFrame = std::chrono::steady_clock::now();
     auto fpsWindow = nextFrame;
     unsigned frameCount = 0;
@@ -614,7 +654,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         const auto epoch = _audioEpoch.load();
         if (audioEpoch != epoch) {
             audioEpoch = epoch;
-            [self replaceAudioWithSampleRate:_paused.load() ? 0 : av.timing.sample_rate];
+            const auto route = _audioRouteEpoch.load();
+            AZAudioOutput *output;
+            @synchronized (self) { output = _audioOutput; }
+            if (_paused.load()) {
+                [output setMuted:YES];
+            } else if (!output || routeEpoch != route) {
+                [self replaceAudioWithSampleRate:av.timing.sample_rate];
+                routeEpoch = route;
+            } else {
+                [output setMuted:NO];
+            }
             nextFrame = fpsWindow = performanceWindow = std::chrono::steady_clock::now();
             frameCount = emulatedFrames = 0;
             coreRunMilliseconds = 0;
@@ -623,9 +673,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             previousImages = _deliveredImages.load();
         }
         if (_paused.load()) {
+            if (!_pauseAcknowledged.exchange(true))
+                [self writeDiagnostic:@"LIFECYCLE pause acknowledged by emulation worker"];
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
+        if (_pauseAcknowledged.exchange(false))
+            [self writeDiagnostic:@"LIFECYCLE resumed emulation worker"];
         const auto runStarted = std::chrono::steady_clock::now();
         @autoreleasepool {
             _runFrame();

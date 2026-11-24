@@ -9,5 +9,7 @@ FOUNDATION_EXPORT NSString *AZValue(NSString *key, NSURL *_Nullable game);
 FOUNDATION_EXPORT BOOL AZHasOverride(NSString *key, NSURL *game);
 FOUNDATION_EXPORT void AZSetValue(NSString *key, NSString *_Nullable value, NSURL *_Nullable game);
 FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *_Nullable game);
+FOUNDATION_EXPORT BOOL AZLaunchOptionsRequireRestart(NSDictionary<NSString *, NSString *> *before,
+                                                    NSDictionary<NSString *, NSString *> *after);
 FOUNDATION_EXPORT void AZResetGameOptions(NSURL *game);
 NS_ASSUME_NONNULL_END

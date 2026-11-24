@@ -5,5 +5,6 @@
 @interface AZAudioOutput : NSObject
 - (BOOL)startWithSampleRate:(double)sampleRate;
 - (void)appendSamples:(const int16_t *)samples frames:(size_t)frames;
+- (void)setMuted:(BOOL)muted;
 - (void)stop;
 @end

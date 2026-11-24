@@ -198,6 +198,10 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, strong) AZTouchScreen *screen;
 @property (nonatomic, strong) AZCirclePad *circlePad;
 @property (nonatomic) BOOL settingsOpen;
+@property (nonatomic) BOOL restartPending;
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *settingsSnapshot;
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *previousOptions;
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pendingOptions;
 @property (nonatomic) BOOL audioInterrupted;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, assign) BOOL started;
@@ -335,14 +339,25 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    if (self.started) { [self refreshInput]; return; }
+    if (self.started) {
+        [self maybeStartRestart];
+        [self refreshInput];
+        return;
+    }
     self.started = YES;
+    [self startSessionWithOptions:AZLaunchOptions(self.game)];
+}
+
+- (void)startSessionWithOptions:(NSDictionary<NSString *, NSString *> *)options {
+    self.screen.image = nil;
+    self.status.text = @"Starting game…";
     self.host = [AzaharEmulator new];
     self.host.delegate = self;
     self.circlePad.host = self.host;
     self.screen.host = self.host;
     NSError *error = nil;
-    if (![self.host startGameAtURL:self.game error:&error]) {
+    if (![self.host startGameAtURL:self.game options:options error:&error]) {
+        self.host = nil;
         [self azaharEmulatorDidFail:error.localizedDescription ?: @"Unable to load Azahar."];
     } else {
         [self refreshInput];
@@ -350,7 +365,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)refreshInput {
-    BOOL enabled = !self.settingsOpen && !self.audioInterrupted && self.viewIfLoaded.window &&
+    BOOL enabled = !self.settingsOpen && !self.restartPending && !self.audioInterrupted && self.viewIfLoaded.window &&
         self.navigationController.topViewController == self &&
         UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
     [self.host setPaused:!enabled];
@@ -363,21 +378,29 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.circlePad centerStick];
 }
 - (void)appActive:(NSNotification *)note {
-    self.audioInterrupted = NO;
+    [self maybeStartRestart];
     [self refreshInput];
 }
 - (void)audioInterrupted:(NSNotification *)note {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self audioInterrupted:note]; });
+        return;
+    }
     self.audioInterrupted = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan;
+    if (!self.audioInterrupted) [self.host refreshAudioRoute];
     [self refreshInput];
 }
 - (void)audioReset:(NSNotification *)note { [self.host refreshAudioRoute]; }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 - (void)showSettings {
+    if (self.restartPending || self.settingsOpen) return;
+    self.settingsSnapshot = AZLaunchOptions(self.game);
     self.settingsOpen = YES;
     [self refreshInput];
     AZSettings *settings = [[AZSettings alloc] initForGame:NO];
     settings.title = @"Settings";
+    settings.restartOnClose = YES;
     settings.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithTitle:@"Game Settings" style:UIBarButtonItemStylePlain target:self action:@selector(showCurrentProfile)];
     settings.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
@@ -390,14 +413,59 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 - (void)showCurrentProfile {
     AZSettings *profile = [[AZSettings alloc] initForGame:YES];
     profile.game = self.game;
-    profile.sessionOptions = self.host.launchOptions;
+    profile.games = @[self.game];
+    profile.restartOnClose = YES;
     profile.title = @"Current game";
     UINavigationController *nav = (UINavigationController *)self.presentedViewController;
     [nav pushViewController:profile animated:YES];
 }
-- (void)settingsClosed {
-    self.settingsOpen = NO;
+- (void)maybeStartRestart {
+    if (!self.restartPending || self.host || self.settingsOpen ||
+        !self.viewIfLoaded.window || self.navigationController.topViewController != self ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    NSDictionary *options = self.pendingOptions ?: AZLaunchOptions(self.game);
+    self.pendingOptions = nil;
+    self.restartPending = NO;
+    [self startSessionWithOptions:options];
+}
+
+- (void)restartWithOptions:(NSDictionary<NSString *, NSString *> *)options {
+    self.pendingOptions = options;
+    self.restartPending = YES;
+    self.status.text = @"Applying settings… waiting for previous game to stop.";
     [self refreshInput];
+    AzaharEmulator *old = self.host;
+    [old stop];
+    if (!old) { [self maybeStartRestart]; return; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf.restartPending && strongSelf.host == old)
+            strongSelf.status.text = @"Previous session has not stopped. Use Stop to return to the library; force-close if it remains stuck.";
+    });
+}
+
+- (void)azaharEmulatorDidFinish:(AzaharEmulator *)emulator {
+    if (self.host != emulator) return;
+    emulator.delegate = nil;
+    self.host = nil;
+    self.circlePad.host = nil;
+    self.screen.host = nil;
+    [self maybeStartRestart];
+}
+
+- (void)settingsClosed {
+    if (!self.settingsOpen) return;
+    self.settingsOpen = NO;
+    NSDictionary *after = AZLaunchOptions(self.game);
+    BOOL changed = self.settingsSnapshot && AZLaunchOptionsRequireRestart(self.settingsSnapshot, after);
+    self.settingsSnapshot = nil;
+    if (changed) {
+        self.previousOptions = self.host.launchOptions;
+        [self restartWithOptions:after];
+    } else {
+        [self refreshInput];
+    }
 }
 - (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
     [self settingsClosed];
@@ -407,6 +475,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)stopGame {
+    self.restartPending = NO;
+    self.pendingOptions = nil;
+    self.host.delegate = nil;
     [self.host stop];
     [self.navigationController popViewControllerAnimated:YES];
 }
@@ -416,7 +487,12 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.host setPaused:YES];
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
-    if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) [self.host stop];
+    if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) {
+        self.restartPending = NO;
+        self.pendingOptions = nil;
+        self.host.delegate = nil;
+        [self.host stop];
+    }
 }
 
 - (void)press:(UIButton *)button {
@@ -428,16 +504,20 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image {
+    if (self.restartPending) return;
+    self.previousOptions = nil;
     self.screen.image = image;
     // FPS callback updates the status once per second.
 }
 
 - (void)azaharEmulatorDidChangeJITStatus:(NSString *)status {
+    if (self.restartPending) return;
     self.status.text = status;
     self.navigationItem.prompt = [AzaharEmulator sessionJITStatus];
 }
 
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
+    if (self.restartPending) return;
     BOOL requested = self.host.experimentalJITEnabled;
     NSString *mode = jitActive ? @"JIT running" : (self.host.jitActive ? @"JIT prepared" :
                      (requested ? @"JIT unavailable (interpreter)" : @"Interpreter"));
@@ -446,9 +526,18 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)azaharEmulatorDidFail:(NSString *)message {
+    if (self.restartPending) return;
     self.status.text = @"Game could not start";
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Azahar"
         message:message preferredStyle:UIAlertControllerStyleAlert];
+    if (self.previousOptions) {
+        NSDictionary *previous = self.previousOptions;
+        [alert addAction:[UIAlertAction actionWithTitle:@"Retry previous session settings" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            self.previousOptions = nil;
+            [self restartWithOptions:previous];
+        }]];
+        alert.message = [message stringByAppendingString:@"\nRetry uses the previous configuration for this session only; saved preferences stay unchanged."];
+    }
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault
         handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];

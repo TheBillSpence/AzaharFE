@@ -29,3 +29,6 @@ The iPhone reported successful 128 MiB allocations and 389 mapped host groups (6
 
 ## Device allocation and benchmark follow-up
 Device reached first software frame with guarded fastmem, then stopped at the optional benchmark. A second launch stopped during fourth mapped JIT allocation. Remove synthetic benchmark invocation from retro_run; retain live profiling and native harness. Cap secondary mapped JITs at 32 MiB, preserve primary 128 MiB and empty 16 MiB. Log core, mapping, cache and elapsed allocation time. Root cause not yet confirmed on device.
+
+## Session settings lifecycle
+Compare effective options when the settings sheet closes. Coalesce changes into one controlled stop/relaunch; no changes means resume. The next session starts only after the old worker has closed the core and cleared its ownership. In-game unsaved progress is not preserved. Explicit startup failures offer a previous-session configuration retry without rewriting saved preferences. A stalled worker stays owned; show a timeout rather than unloading active generated code. Pause requests send a cooperative JIT halt off-main, and routine pause/resume mutes/rebuffers the existing audio queue rather than recreating it. Route changes still rebuild audio. Library loading moves to worker. Watchdog releases class lock before calling core. Device testing required.

@@ -27,6 +27,14 @@ int main() {
         assert([AZLaunchOptions(game)[@"AzaharExperimentalJIT"] isEqual:@"on"]);
         assert([AZLaunchOptions(nil)[@"AzaharExperimentalJIT"] isEqual:@"off"]);
         AZResetGameOptions(game);
+        NSDictionary *before = AZLaunchOptions(game);
+        assert(!AZLaunchOptionsRequireRestart(before, [before copy]));
+        NSMutableDictionary *after = [before mutableCopy];
+        after[@"citra_graphics_api"] = [before[@"citra_graphics_api"] isEqual:@"Vulkan"] ? @"Software" : @"Vulkan";
+        assert(AZLaunchOptionsRequireRestart(before, after));
+        after = [before mutableCopy];
+        after[@"AzaharExperimentalJIT"] = [before[@"AzaharExperimentalJIT"] isEqual:@"on"] ? @"off" : @"on";
+        assert(AZLaunchOptionsRequireRestart(before, after));
 
         GCController *synthetic = [GCController controllerWithExtendedGamepad];
         GCExtendedGamepad *gc = synthetic.extendedGamepad;

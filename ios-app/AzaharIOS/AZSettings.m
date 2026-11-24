@@ -105,6 +105,7 @@
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section==0 && self.perGame && !self.game) return @"Add a game to set its preferences.";
     if (section==1 && self.sessionOptions) return @"Values used to launch this session.";
+    if (section==1 && self.restartOnClose) return @"Changes restart this game when you close Settings. Save in-game first; unsaved progress will be lost.";
     if (section==1 && (!self.perGame || self.game)) return @"Changes apply when you launch the game.";
     return nil;
 }

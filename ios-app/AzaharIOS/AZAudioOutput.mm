@@ -13,12 +13,16 @@ namespace {
 struct Playback {
     AZAudioBuffer pcm;
     std::atomic<bool> running{false};
+    std::atomic<bool> muted{false};
     AudioQueueRef queue = nullptr;
 };
 void FillBuffer(void *context, AudioQueueRef queue, AudioQueueBufferRef buffer) {
     auto *state = static_cast<Playback *>(context);
     if (!state->running.load(std::memory_order_acquire)) return;
-    state->pcm.PullBuffered(static_cast<int16_t *>(buffer->mAudioData), kBufferFrames, 1536);
+    if (state->muted.load(std::memory_order_acquire))
+        memset(buffer->mAudioData, 0, kBufferBytes);
+    else
+        state->pcm.PullBuffered(static_cast<int16_t *>(buffer->mAudioData), kBufferFrames, 1536);
     buffer->mAudioDataByteSize = kBufferBytes;
     if (state->running.load(std::memory_order_acquire))
         AudioQueueEnqueueBuffer(queue, buffer, 0, nullptr);
@@ -55,6 +59,7 @@ void FillBuffer(void *context, AudioQueueRef queue, AudioQueueBufferRef buffer) 
     OSStatus result = AudioQueueNewOutput(&format, FillBuffer, &_playback,
                                          nullptr, nullptr, 0, &_playback.queue);
     if (result != noErr) { [self stop]; return NO; }
+    _playback.muted.store(false, std::memory_order_release);
     _playback.running.store(true, std::memory_order_release);
     for (unsigned i = 0; i < 3; ++i) {
         AudioQueueBufferRef buffer = nullptr;
@@ -73,8 +78,14 @@ void FillBuffer(void *context, AudioQueueRef queue, AudioQueueBufferRef buffer) 
 }
 
 - (void)appendSamples:(const int16_t *)samples frames:(size_t)frames {
-    if (_playback.running.load(std::memory_order_acquire))
+    if (_playback.running.load(std::memory_order_acquire) &&
+        !_playback.muted.load(std::memory_order_acquire))
         _playback.pcm.Push(samples, frames);
+}
+
+- (void)setMuted:(BOOL)muted {
+    if (_playback.muted.exchange(muted != NO, std::memory_order_acq_rel) != (muted != NO))
+        _playback.pcm.Clear();
 }
 
 - (void)stop {

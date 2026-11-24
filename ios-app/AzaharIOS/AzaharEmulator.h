@@ -1,10 +1,14 @@
 #import <UIKit/UIKit.h>
 
+@class AzaharEmulator;
+
 @protocol AzaharEmulatorDelegate <NSObject>
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image;
 - (void)azaharEmulatorDidFail:(NSString *)message;
 - (void)azaharEmulatorDidChangeJITStatus:(NSString *)status;
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive;
+@optional
+- (void)azaharEmulatorDidFinish:(AzaharEmulator *)emulator;
 @end
 
 @interface AzaharEmulator : NSObject
@@ -17,6 +21,7 @@
 
 // Loads the bundled libretro dylib and starts the emulation loop on a worker queue.
 - (BOOL)startGameAtURL:(NSURL *)url error:(NSError **)error;
+- (BOOL)startGameAtURL:(NSURL *)url options:(NSDictionary<NSString *, NSString *> *)options error:(NSError **)error;
 - (void)stop;
 - (void)setPaused:(BOOL)paused;
 - (void)refreshAudioRoute;

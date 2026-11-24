@@ -90,6 +90,17 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
     }
     return [values copy];
 }
+BOOL AZLaunchOptionsRequireRestart(NSDictionary<NSString *, NSString *> *before,
+                                   NSDictionary<NSString *, NSString *> *after) {
+    for (NSString *key in AZOptionKeys()) {
+        if ([key isEqual:@"AzaharJITPreset"]) continue;
+        if ([key isEqual:@"AzaharJITSpeed"] &&
+            [before[@"AzaharExperimentalJIT"] isEqual:@"off"] &&
+            [after[@"AzaharExperimentalJIT"] isEqual:@"off"]) continue;
+        if (![before[key] isEqual:after[key]]) return YES;
+    }
+    return NO;
+}
 void AZSetValue(NSString *key, NSString *value, NSURL *game) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if (game) {
