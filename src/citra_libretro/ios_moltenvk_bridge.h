@@ -10,8 +10,9 @@
 extern "C" {
 __attribute__((visibility("default"))) bool azahar_ios_vk_start(const void* negotiation);
 __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface();
-__attribute__((visibility("default"))) bool azahar_ios_vk_readback(
-    unsigned width, unsigned height, const void** pixels, std::size_t* pitch);
+__attribute__((visibility("default"))) bool azahar_ios_vk_readback(unsigned width, unsigned height,
+                                                                   const void** pixels,
+                                                                   std::size_t* pitch);
 __attribute__((visibility("default"))) void azahar_ios_vk_shutdown();
 }
 #endif

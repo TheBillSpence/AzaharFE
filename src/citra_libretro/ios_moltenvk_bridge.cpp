@@ -44,8 +44,8 @@ bool HasInstanceExtension(const char* name) {
     });
 }
 
-void SetImage(void*, const retro_vulkan_image* image, unsigned num_semaphores,
-              const VkSemaphore*, std::uint32_t) {
+void SetImage(void*, const retro_vulkan_image* image, unsigned num_semaphores, const VkSemaphore*,
+              std::uint32_t) {
     // The current Azahar presenter passes no external semaphores. Reject
     // unsupported ownership transitions rather than reading unfinished data.
     if (!image || num_semaphores != 0) {
@@ -140,15 +140,14 @@ bool CopyOutput(VkBuffer buffer, unsigned width, unsigned height) {
         before.subresourceRange.levelCount = 1;
         before.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                             &before);
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &before);
 
         VkBufferImageCopy copy{};
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy.imageSubresource.layerCount = 1;
         copy.imageExtent = {width, height, 1};
-        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               buffer, 1, &copy);
+        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer,
+                               1, &copy);
 
         VkImageMemoryBarrier after = before;
         after.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -253,8 +252,8 @@ extern "C" const void* azahar_ios_vk_get_interface() {
     return state.device ? &state.interface : nullptr;
 }
 
-extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height,
-                                       const void** pixels, std::size_t* pitch) {
+extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const void** pixels,
+                                       std::size_t* pitch) {
     if (!pixels || !pitch || !state.device || !state.image || width == 0 || height == 0 ||
         width > 4096 || height > 4096 ||
         (state.image_format != VK_FORMAT_R8G8B8A8_UNORM &&

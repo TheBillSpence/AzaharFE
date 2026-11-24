@@ -115,16 +115,16 @@ static __weak AzaharEmulator *sCurrentEmulator;
     NSString *_lastMessage;
 
     // Experimental libretro Vulkan/MoltenVK bridge, deliberately optional.
-    struct retro_hw_render_callback _vkRenderCallback{};
-    const void *_vkNegotiation = nullptr;
-    void *_vkInterface = nullptr;
-    bool _vkRequested = false;
-    bool _vkReadbackErrorReported = false;
-    bool (*_vkStart)(const void *) = nullptr;
-    const void *(*_vkGetInterface)(void) = nullptr;
-    bool (*_vkReadback)(unsigned, unsigned, const void **, size_t *) = nullptr;
-    void (*_vkShutdown)(void) = nullptr;
-    bool (*_vkGameLoaded)(void) = nullptr;
+    struct retro_hw_render_callback _vkRenderCallback;
+    const void *_vkNegotiation;
+    void *_vkInterface;
+    bool _vkRequested;
+    bool _vkReadbackErrorReported;
+    bool (*_vkStart)(const void *);
+    const void *(*_vkGetInterface)(void);
+    bool (*_vkReadback)(unsigned, unsigned, const void **, size_t *);
+    void (*_vkShutdown)(void);
+    bool (*_vkGameLoaded)(void);
 
     decltype(&retro_set_environment) _setEnvironment;
     decltype(&retro_set_video_refresh) _setVideoRefresh;
@@ -239,6 +239,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (!self) return nil;
 
     _requestJITHalt = nullptr;
+    _vkRenderCallback = {};
+    _vkNegotiation = nullptr;
+    _vkInterface = nullptr;
+    _vkRequested = false;
+    _vkReadbackErrorReported = false;
+    _vkStart = nullptr;
+    _vkGetInterface = nullptr;
+    _vkReadback = nullptr;
+    _vkShutdown = nullptr;
+    _vkGameLoaded = nullptr;
     _stopping.store(false);
     _frameQueued.store(false);
     _buttons.store(0);
