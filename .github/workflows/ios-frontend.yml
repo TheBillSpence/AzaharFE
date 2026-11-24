@@ -230,7 +230,7 @@ jobs:
           set -euo pipefail
           dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
           test -n "$dylib"
-          for sym in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_shutdown azahar_ios_vk_game_loaded; do
+          for sym in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_readback_failed azahar_ios_vk_drain_readback azahar_ios_vk_shutdown azahar_ios_vk_game_loaded; do
             if ! xcrun nm -gU "$dylib" | grep -E "(^|[[:space:]])_${sym}$"; then
               echo "::error::MoltenVK interface export is missing: $sym"
               exit 1

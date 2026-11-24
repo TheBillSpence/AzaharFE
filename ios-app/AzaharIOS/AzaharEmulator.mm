@@ -136,6 +136,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_start) _vkStart;
     decltype(&azahar_ios_vk_get_interface) _vkGetInterface;
     decltype(&azahar_ios_vk_readback) _vkReadback;
+    decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
+    decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
     decltype(&azahar_ios_vk_game_loaded) _vkGameLoaded;
 
@@ -274,6 +276,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _vkStart = nullptr;
     _vkGetInterface = nullptr;
     _vkReadback = nullptr;
+    _vkReadbackFailed = nullptr;
+    _vkDrainReadback = nullptr;
     _vkShutdown = nullptr;
     _vkGameLoaded = nullptr;
     _stopping.store(false);
@@ -497,6 +501,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_get_interface"));
         _vkReadback = reinterpret_cast<decltype(_vkReadback)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback"));
+        _vkReadbackFailed = reinterpret_cast<decltype(_vkReadbackFailed)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_readback_failed"));
+        _vkDrainReadback = reinterpret_cast<decltype(_vkDrainReadback)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_drain_readback"));
         _vkShutdown = reinterpret_cast<decltype(_vkShutdown)>(
             dlsym(_libraryHandle, "azahar_ios_vk_shutdown"));
         _vkGameLoaded = reinterpret_cast<decltype(_vkGameLoaded)>(
@@ -528,6 +536,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 [self runLoadedGame];
                 [self writeDiagnostic:@"LIFECYCLE stopping audio"];
                 [self replaceAudioWithSampleRate:0];
+                if (_vkRequested && _vkDrainReadback && !_vkDrainReadback()) {
+                    [self reportJITStage:@"Vulkan GPU copy is still pending. Waiting on worker; restart is blocked until safe teardown."];
+                    // Never unload the core or free a source image while the
+                    // driver's submission could still access it. Keep the
+                    // session owned and the UI responsive if the GPU is stuck.
+                    while (!_vkDrainReadback())
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    [self writeDiagnostic:@"LIFECYCLE pending Vulkan copy drained"];
+                }
                 [self writeDiagnostic:@"LIFECYCLE unloading game"];
                 _unloadGame();
                 [self writeDiagnostic:@"LIFECYCLE game unloaded"];
@@ -612,7 +629,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)startVulkanRenderer {
-    if (!_vkStart || !_vkGetInterface || !_vkReadback || !_vkShutdown || !_vkGameLoaded ||
+    if (!_vkStart || !_vkGetInterface || !_vkReadback || !_vkReadbackFailed ||
+        !_vkDrainReadback || !_vkShutdown || !_vkGameLoaded ||
         !_vkNegotiation || !_vkRenderCallback.context_reset) return NO;
     try {
         if (!_vkStart(_vkNegotiation)) return NO;
@@ -877,8 +895,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         data = copied ? gpuPixels : nullptr;
     }
     if (!data || pitch < width * 4 || pitch > 4096 * 4) {
-        if (hardware && ++_readbackFailures == 1)
-            [self reportJITStage:@"MoltenVK image readback failed"];
+        if (hardware) {
+            if (_vkReadbackFailed && _vkReadbackFailed()) {
+                _readbackFailures = 3;
+                [self reportJITStage:@"MoltenVK GPU submission failed or fence timed out; leaving frame loop"];
+            } else if (++_readbackFailures == 1) {
+                [self reportJITStage:@"MoltenVK image readback failed"];
+            }
+        }
         _frameQueued.store(false);
         return;
     }

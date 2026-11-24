@@ -31,6 +31,7 @@ struct Context {
     VkDeviceSize capacity = 0;
     bool coherent = false;
     bool device_failed = false;
+    bool copy_pending = false;
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat image_format = VK_FORMAT_UNDEFINED;
@@ -199,8 +200,13 @@ bool CopyOutput(unsigned width, unsigned height) {
                     return false;
                 }
             }
-            result =
-                vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+            state.copy_pending = true;
+            // A driver stall must not trap the frame loop in an infinite fence wait.
+            constexpr std::uint64_t kReadbackTimeoutNs = 2'000'000'000ULL;
+            const auto waited = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE,
+                                               kReadbackTimeoutNs);
+            result = waited == VK_SUCCESS;
+            state.copy_pending = waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST;
             state.device_failed = !result;
         }
     }
@@ -339,6 +345,23 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const vo
     return okay;
 }
 
+extern "C" bool azahar_ios_vk_readback_failed() {
+    return state.device_failed;
+}
+
+extern "C" bool azahar_ios_vk_drain_readback() {
+    if (!state.copy_pending)
+        return true;
+    // Do not reset the fence, release staging RAM or destroy the source image
+    // until the pending submission completes or the device is declared lost.
+    const auto result = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, 1'000'000'000ULL);
+    if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) {
+        state.copy_pending = false;
+        return true;
+    }
+    return false;
+}
+
 extern "C" void azahar_ios_vk_shutdown() {
     if (state.device) {
         std::lock_guard lock{state.queue_mutex};
@@ -354,6 +377,7 @@ extern "C" void azahar_ios_vk_shutdown() {
     state.command = VK_NULL_HANDLE;
     state.copied = VK_NULL_HANDLE;
     state.device_failed = false;
+    state.copy_pending = false;
     state.command_pool = VK_NULL_HANDLE;
     state.device = VK_NULL_HANDLE;
     state.instance = VK_NULL_HANDLE;
