@@ -143,10 +143,12 @@ struct PageTable {
         return false;
     }
 
-    void SyncIOSFastmem() {
+    std::size_t SyncIOSFastmem() {
         if (pointers.fastmem) {
             pointers.fastmem->Sync(pointers.raw);
+            return pointers.fastmem->TakeFirstCoverageReport();
         }
+        return 0;
     }
 #endif
 

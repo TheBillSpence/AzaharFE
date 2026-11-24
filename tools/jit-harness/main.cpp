@@ -11,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <sys/mman.h>
 
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/exclusive_monitor.h>
@@ -78,6 +79,8 @@ public:
     u64 ticks_charged = 0;
     unsigned add_ticks_calls = 0;
     unsigned remaining_calls = 0;
+    unsigned data_reads = 0;
+    unsigned data_writes = 0;
     unsigned svc_calls = 0;
     u32 last_svc = 0;
     Dynarmic::A32::Jit* halt_at_svc = nullptr;
@@ -92,11 +95,11 @@ public:
     }
     u8 MemoryRead8(u32 address) override { return memory.Read8(address); }
     u16 MemoryRead16(u32 address) override { return memory.Read16(address); }
-    u32 MemoryRead32(u32 address) override { return memory.Read32(address); }
+    u32 MemoryRead32(u32 address) override { ++data_reads; return memory.Read32(address); }
     u64 MemoryRead64(u32 address) override { return memory.Read64(address); }
     void MemoryWrite8(u32 address, u8 value) override { memory.Write8(address, value); }
     void MemoryWrite16(u32 address, u16 value) override { memory.Write16(address, value); }
-    void MemoryWrite32(u32 address, u32 value) override { memory.Write32(address, value); }
+    void MemoryWrite32(u32 address, u32 value) override { ++data_writes; memory.Write32(address, value); }
     void MemoryWrite64(u32 address, u64 value) override { memory.Write64(address, value); }
     bool MemoryWriteExclusive32(u32 address, u32 value, u32 expected) override {
         if (memory.Read32(address) != expected) return false;
@@ -498,6 +501,59 @@ void TestOptimizationMode(const std::string& mode) {
     std::cout << "PASS " << mode << " optimized Run/Step state and budgets\n";
 }
 
+void TestGuardedFastmem() {
+    Environment env;
+    env.memory.Write32(kCode, 0xE5920000); // LDR r0,[r2]
+    env.memory.Write32(kCode + 4, 0xE5823000); // STR r3,[r2]
+    env.memory.Write32(kCode + 8, 0xEAFFFFFE);
+    constexpr std::size_t window = std::size_t{1} << 32;
+    void* mapping = mmap(nullptr, window, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    Require(mapping != MAP_FAILED, "reserve 4 GiB test fastmem");
+    Require(mprotect(mapping, 16384, PROT_READ | PROT_WRITE) == 0, "map test RAM");
+    auto* memory = static_cast<u8*>(mapping);
+    auto guards = std::make_unique<std::array<u8, 1u << 18>>();
+    guards->fill(0);
+    (*guards)[0] = 1;
+    auto config = ConservativeConfig(env);
+    config.code_cache_size = Core::IOSJitCacheSize("fastmem");
+    config.fastmem_pointer = reinterpret_cast<std::uintptr_t>(mapping);
+    config.guarded_fastmem_table = reinterpret_cast<std::uintptr_t>(guards->data());
+    config.recompile_on_fastmem_failure = false;
+    config.optimizations = Core::SelectIOSJitOptimizations(
+        Dynarmic::A32::UserConfig{}.optimizations, "fastmem");
+    {
+        Dynarmic::A32::Jit cpu(config);
+        InitCPU(cpu);
+        memory[kData] = 77;
+        cpu.Regs()[3] = 99;
+        auto step = [&] { env.ticks_left = 1; cpu.Step(); };
+        step();
+        Require(cpu.Regs()[0] == 77 && env.data_reads == 0, "fastmem LDR used callback");
+        step();
+        Require(memory[kData] == 99 && env.data_writes == 0, "fastmem STR used callback");
+        // Reuse translated code after disabling the mapping.
+        (*guards)[0] = 0;
+        env.memory.Write32(kData, 42);
+        cpu.Regs()[15] = kCode;
+        step();
+        Require(cpu.Regs()[0] == 42 && env.data_reads == 1, "guard did not fallback");
+        cpu.Regs()[3] = 123;
+        step();
+        Require(env.memory.Read32(kData) == 123 && env.data_writes == 1,
+                "guarded STR did not fallback");
+        // The access straddles an inaccessible host page. The fixture's
+        // out-of-range callback returns zero for bytes outside guest RAM.
+        (*guards)[0] = 1;
+        cpu.Regs()[15] = kCode;
+        cpu.Regs()[2] = 16382;
+        step();
+        Require(env.data_reads == 2 && env.memory.out_of_bounds,
+                "cross-host-page LDR did not fallback");
+    }
+    munmap(mapping, window);
+    std::cout << "PASS guarded 4 GiB ARM64 fastmem loads, stores and fallback\n";
+}
+
 void TestExclusive(const std::string& mode) {
     Environment env;
     Dynarmic::ExclusiveMonitor monitor(2);
@@ -623,6 +679,7 @@ int main(int argc, char** argv) {
         else if (name == "opt_direct") TestOptimizationMode("direct");
         else if (name == "opt_hyper") TestOptimizationMode("hyper");
         else if (name == "opt_hyperfp") TestOptimizationMode("hyperfp");
+        else if (name == "guarded_fastmem") TestGuardedFastmem();
         else if (name == "microbench") TestIOSMicrobenchmarkFixture();
         else throw std::runtime_error("unknown test: " + name);
         return EXIT_SUCCESS;

@@ -401,7 +401,13 @@ void ARM_Dynarmic::Run() {
 #ifdef IOS
 #if defined(__APPLE__) && defined(__aarch64__)
     if (current_page_table) {
-        current_page_table->SyncIOSFastmem();
+        if (const auto groups = current_page_table->SyncIOSFastmem()) {
+            char message[120];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE fastmem alias coverage: %zu host groups (%zu KiB)", groups,
+                          groups * 16);
+            LibRetro::DisplayMessage(message);
+        }
     }
 #endif
     AzaharScopedJITRun active_jit{jit};
@@ -566,7 +572,13 @@ void ARM_Dynarmic::Step() {
     }
 #if defined(__APPLE__) && defined(__aarch64__)
     if (current_page_table) {
-        current_page_table->SyncIOSFastmem();
+        if (const auto groups = current_page_table->SyncIOSFastmem()) {
+            char message[120];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE fastmem alias coverage: %zu host groups (%zu KiB)", groups,
+                          groups * 16);
+            LibRetro::DisplayMessage(message);
+        }
     }
 #endif
     AzaharScopedJITRun active_step{jit};
