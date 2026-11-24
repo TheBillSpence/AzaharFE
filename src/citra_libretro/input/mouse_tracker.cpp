@@ -106,9 +106,10 @@ void MouseTracker::Update(int bufferWidth, int bufferHeight,
         state |= LibRetro::CheckInput(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
     }
 
-    if (LibRetro::settings.enable_touch_touchscreen) {
-        state |= LibRetro::CheckInput(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED);
-    }
+    const bool finger = LibRetro::settings.enable_touch_touchscreen &&
+                        LibRetro::CheckInput(0, RETRO_DEVICE_POINTER, 0,
+                                             RETRO_DEVICE_ID_POINTER_PRESSED);
+    state |= finger;
 
     if (state == true) {
         auto pointerX = LibRetro::CheckInput(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
@@ -116,16 +117,18 @@ void MouseTracker::Update(int bufferWidth, int bufferHeight,
         auto newX = static_cast<int>((pointerX + 0x7fff) / (float)(0x7fff * 2) * bufferWidth);
         auto newY = static_cast<int>((pointerY + 0x7fff) / (float)(0x7fff * 2) * bufferHeight);
 
-        if ((pointerX != 0 || pointerY != 0) && (newX != lastMouseX || newY != lastMouseY)) {
-            if (layout.IsWithinTouchscreen(newX, newY) || isPressed) {
+        if (finger || ((pointerX != 0 || pointerY != 0) &&
+                       (newX != lastMouseX || newY != lastMouseY))) {
+            if (layout.bottom_screen_enabled && (layout.IsWithinTouchscreen(newX, newY) || isPressed)) {
+                wasMoved = !isPressed || newX != lastMouseX || newY != lastMouseY;
                 lastMouseX = newX;
                 lastMouseY = newY;
 
                 x = std::clamp(newX, static_cast<int>(layout.bottom_screen.left),
-                               static_cast<int>(layout.bottom_screen.right)) -
+                               static_cast<int>(layout.bottom_screen.right) - 1) -
                     layout.bottom_screen.left;
                 y = std::clamp(newY, static_cast<int>(layout.bottom_screen.top),
-                               static_cast<int>(layout.bottom_screen.bottom)) -
+                               static_cast<int>(layout.bottom_screen.bottom) - 1) -
                     layout.bottom_screen.top;
             } else {
                 // If touch was already pressed before going off the edge of the screen, keep it
@@ -135,7 +138,7 @@ void MouseTracker::Update(int bufferWidth, int bufferHeight,
         }
     }
 
-    if (LibRetro::settings.analog_function != LibRetro::CStickFunction::CStick) {
+    if (!finger && LibRetro::settings.analog_function != LibRetro::CStickFunction::CStick) {
         // Check right analog input
         state |= LibRetro::CheckInput(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3);
 

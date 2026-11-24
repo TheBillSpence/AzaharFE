@@ -3,7 +3,7 @@
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
 #import "AZSettings.h"
-#include "libretro.h"
+#include "AZGameInput.h"
 
 static NSArray<NSString *> *GameExtensions(void) {
     return @[@"3ds", @"3dsx", @"z3dsx", @"elf", @"axf", @"cci", @"zcci",
@@ -30,14 +30,88 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     return label;
 }
 
-@interface AzaharGameViewController : UIViewController <AzaharEmulatorDelegate>
+@interface AZTouchScreen : UIImageView
+@property (nonatomic, weak) AzaharEmulator *host;
+@end
+
+@implementation AZTouchScreen
+- (void)updateTouch:(UITouch *)touch {
+    CGPoint p = [touch locationInView:self];
+    CGRect bounds = self.bounds;
+    CGSize image = self.image.size;
+    const auto pointer = AZInput::Project(p.x - CGRectGetMinX(bounds), p.y - CGRectGetMinY(bounds),
+        bounds.size.width, bounds.size.height, image.width, image.height);
+    [self.host setPointerX:pointer.x y:pointer.y pressed:pointer.down];
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self updateTouch:touches.anyObject];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self updateTouch:touches.anyObject];
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self.host setPointerX:0 y:0 pressed:NO];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self.host setPointerX:0 y:0 pressed:NO];
+}
+@end
+
+@interface AZCirclePad : UIControl
+@property (nonatomic, weak) AzaharEmulator *host;
+@property (nonatomic) CGPoint deflection;
+- (void)centerStick;
+@end
+
+@implementation AZCirclePad
+- (void)drawRect:(CGRect)rect {
+    CGRect b = self.bounds;
+    const CGFloat diameter = MIN(b.size.width, b.size.height) - 4;
+    CGPoint c = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
+    [AZPanel() setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x-diameter/2, c.y-diameter/2,
+                                                       diameter, diameter)] fill];
+    const CGFloat thumb = diameter * 0.46;
+    const CGFloat travel = (diameter - thumb) / 2;
+    [AZBlue() setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x + self.deflection.x * travel - thumb/2,
+        c.y + self.deflection.y * travel - thumb/2, thumb, thumb)] fill];
+}
+- (void)moveStick:(UITouch *)touch {
+    CGPoint p = [touch locationInView:self];
+    CGRect b = self.bounds;
+    const CGFloat radius = MAX(1.0, MIN(b.size.width, b.size.height) / 2);
+    double x = (p.x - CGRectGetMidX(b)) / radius, y = (p.y - CGRectGetMidY(b)) / radius;
+    const double length = std::max(1.0, std::hypot(x, y));
+    self.deflection = CGPointMake(x / length, y / length);
+    [self.host setCircleX:AZInput::Axis(self.deflection.x) y:AZInput::Axis(self.deflection.y)];
+    [self setNeedsDisplay];
+}
+- (void)centerStick {
+    self.deflection = CGPointZero;
+    [self.host setCircleX:0 y:0];
+    [self setNeedsDisplay];
+}
+- (BOOL)beginTracking:(UITouch *)touch withEvent:(UIEvent *)event {
+    [self moveStick:touch]; return YES;
+}
+- (BOOL)continueTracking:(UITouch *)touch withEvent:(UIEvent *)event {
+    [self moveStick:touch]; return YES;
+}
+- (void)endTracking:(UITouch *)touch withEvent:(UIEvent *)event { [self centerStick]; }
+- (void)cancelTrackingWithEvent:(UIEvent *)event { [self centerStick]; }
+@end
+
+@interface AzaharGameViewController : UIViewController <AzaharEmulatorDelegate, UIAdaptivePresentationControllerDelegate>
 - (instancetype)initWithGame:(NSURL *)game;
 @end
 
 @interface AzaharGameViewController ()
 @property (nonatomic, strong) NSURL *game;
 @property (nonatomic, strong) AzaharEmulator *host;
-@property (nonatomic, strong) UIImageView *screen;
+@property (nonatomic, strong) AZTouchScreen *screen;
+@property (nonatomic, strong) AZCirclePad *circlePad;
+@property (nonatomic) BOOL settingsOpen;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, assign) BOOL started;
 @end
@@ -66,7 +140,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     stop.tintColor = UIColor.systemRedColor;
     stop.accessibilityLabel = @"Stop game and return to library";
     self.navigationItem.rightBarButtonItems = @[gear, stop];
-    self.screen = [UIImageView new];
+    NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
+    [notifications addObserver:self selector:@selector(appInactive:) name:UIApplicationWillResignActiveNotification object:nil];
+    [notifications addObserver:self selector:@selector(appActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    self.screen = [AZTouchScreen new];
+    self.screen.userInteractionEnabled = YES;
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.backgroundColor = UIColor.blackColor;
     self.screen.layer.cornerRadius = 10;
@@ -86,9 +164,19 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.view addSubview:self.status];
 
     UIStackView *controls = [[UIStackView alloc] init];
-    controls.axis = UILayoutConstraintAxisVertical;
+    controls.axis = UILayoutConstraintAxisHorizontal;
     controls.spacing = 8;
-    controls.distribution = UIStackViewDistributionFillEqually;
+    self.circlePad = [AZCirclePad new];
+    self.circlePad.backgroundColor = UIColor.clearColor;
+    self.circlePad.opaque = NO;
+    self.circlePad.accessibilityLabel = @"Circle Pad";
+    [controls addArrangedSubview:self.circlePad];
+    [self.circlePad.widthAnchor constraintEqualToConstant:64].active = YES;
+    UIStackView *rows = [UIStackView new];
+    rows.axis = UILayoutConstraintAxisVertical;
+    rows.distribution = UIStackViewDistributionFillEqually;
+    rows.spacing = 8;
+    [controls addArrangedSubview:rows];
     controls.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:controls];
 
@@ -128,7 +216,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
                     UIControlEventTouchUpOutside | UIControlEventTouchCancel];
             [stack addArrangedSubview:button];
         }
-        [controls addArrangedSubview:stack];
+        [rows addArrangedSubview:stack];
     }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -165,18 +253,36 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    if (self.started) return;
+    if (self.started) { [self refreshInput]; return; }
     self.started = YES;
     self.host = [AzaharEmulator new];
     self.host.delegate = self;
-    self.host.experimentalJITEnabled = [AZValue(@"AzaharExperimentalJIT", self.game) isEqual:@"on"];
+    self.circlePad.host = self.host;
+    self.screen.host = self.host;
     NSError *error = nil;
     if (![self.host startGameAtURL:self.game error:&error]) {
         [self azaharEmulatorDidFail:error.localizedDescription ?: @"Unable to load Azahar."];
+    } else {
+        [self refreshInput];
     }
 }
 
+- (void)refreshInput {
+    BOOL enabled = !self.settingsOpen && self.viewIfLoaded.window &&
+        self.navigationController.topViewController == self &&
+        UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    [self.host setInputEnabled:enabled];
+    if (!enabled) [self.circlePad centerStick];
+}
+- (void)appInactive:(NSNotification *)note {
+    [self.host setInputEnabled:NO];
+    [self.circlePad centerStick];
+}
+- (void)appActive:(NSNotification *)note { [self refreshInput]; }
+
 - (void)showSettings {
+    self.settingsOpen = YES;
+    [self refreshInput];
     AZSettings *settings = [[AZSettings alloc] initForGame:NO];
     settings.title = @"Settings";
     settings.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
@@ -186,6 +292,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
     nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     [self presentViewController:nav animated:YES completion:nil];
+    nav.presentationController.delegate = self;
 }
 - (void)showCurrentProfile {
     AZSettings *profile = [[AZSettings alloc] initForGame:YES];
@@ -195,7 +302,16 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     UINavigationController *nav = (UINavigationController *)self.presentedViewController;
     [nav pushViewController:profile animated:YES];
 }
-- (void)closeSettings { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)settingsClosed {
+    self.settingsOpen = NO;
+    [self refreshInput];
+}
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
+    [self settingsClosed];
+}
+- (void)closeSettings {
+    [self dismissViewControllerAnimated:YES completion:^{ [self settingsClosed]; }];
+}
 
 - (void)stopGame {
     [self.host stop];
@@ -204,6 +320,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    [self.host setInputEnabled:NO];
+    [self.circlePad centerStick];
     if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) [self.host stop];
 }
 
@@ -227,8 +345,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
     BOOL requested = self.host.experimentalJITEnabled;
-    NSString *mode = jitActive ? @"JIT27 universal prepared" :
-                     (requested ? @"JIT unavailable (interpreter)" : @"Interpreter");
+    NSString *mode = jitActive ? @"JIT running" : (self.host.jitActive ? @"JIT prepared" :
+                     (requested ? @"JIT unavailable (interpreter)" : @"Interpreter"));
     self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | %@ graphics",
                         fps, mode, self.host.launchOptions[@"citra_graphics_api"] ?: @"Software"];
 }
@@ -427,7 +545,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (@available(iOS 15.0, *)) self.tabs.scrollEdgeAppearance = barStyle;
     self.tabs.tintColor = AZBlue();
     self.tabs.unselectedItemTintColor = [UIColor colorWithRed:0.62 green:0.70 blue:0.81 alpha:1];
-    NSArray *names = @[@"Library", @"More", @"Game Settings", @"Settings"];
+    NSArray *names = @[@"Library", @"More", @"Game Prep", @"Settings"];
     NSArray *symbols = @[@"square.grid.2x2", @"ellipsis.circle", @"slider.horizontal.3", @"gearshape"];
     NSMutableArray *items = [NSMutableArray array];
     for (NSInteger i=0; i<4; ++i) {
@@ -468,6 +586,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.page=index;
     self.tabs.selectedItem=self.tabs.items[index];
     self.title=self.tabs.selectedItem.title;
+    if ([self.pages[index] isKindOfClass:AZSettings.class])
+        [((AZSettings *)self.pages[index]).tableView reloadData];
     self.footer.hidden=index!=3;
     for (NSUInteger i=0;i<self.pages.count;++i) self.pages[i].view.accessibilityElementsHidden=(NSInteger)i!=index;
 }

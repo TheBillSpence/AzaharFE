@@ -7,6 +7,8 @@
 @interface AZSettings () <UIDocumentPickerDelegate>
 @property (nonatomic) BOOL perGame;
 @property (nonatomic, strong) UILabel *runtimeLabel;
+@property (nonatomic, strong) NSTimer *statusTimer;
+@property (nonatomic) BOOL showAdvanced;
 @end
 
 @implementation AZSettings
@@ -34,6 +36,22 @@
         [self refreshStatus];
     }
 }
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.runtimeLabel && !self.statusTimer) {
+        __weak AZSettings *weakSelf = self;
+        self.statusTimer = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
+            if (!weakSelf) { [timer invalidate]; return; }
+            if (weakSelf.viewIfLoaded.window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
+                [weakSelf refreshStatus];
+        }];
+    }
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self.statusTimer invalidate];
+    self.statusTimer = nil;
+}
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshStatus];
@@ -50,12 +68,21 @@
 }
 - (void)sessionStatusChanged:(NSNotification *)notification { [self refreshStatus]; }
 - (void)refreshStatus { self.runtimeLabel.text=[AzaharEmulator sessionJITStatus]; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSArray<NSString *> *)keysForSection:(NSInteger)section {
+    if (section == 1)
+        return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
+                 @"citra_layout_option", @"citra_swap_screen"];
+    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads"];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section==0) return 1;
-    return self.perGame && !self.game ? 0 : AZOptionKeys().count;
+    if (self.perGame && !self.game) return 0;
+    if (section == 2) return 1 + (self.showAdvanced ? [self keysForSection:section].count : 0);
+    return [self keysForSection:section].count;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (section==2) return nil;
     if (section==0) return self.perGame ? @"Selected game" : nil;
     return self.perGame ? (self.game ? @"Settings for this game" : nil) : @"Universal Settings";
 }
@@ -101,11 +128,18 @@
     } else if (ip.section==0) {
         content.text=@"Log Data";
         content.image=[UIImage systemImageNamed:@"doc.text"];
+    } else if (ip.section == 2 && ip.row == 0) {
+        content.text = self.showAdvanced ? @"Hide advanced settings" : @"Show advanced settings";
+        cell.accessoryType = UITableViewCellAccessoryNone;
     } else {
-        NSString *key=AZOptionKeys()[ip.row];
+        NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)];
         content.text=AZOptionTitle(key);
-        NSString *value=AZChoiceTitle(key, AZValue(key,self.perGame ? self.game : nil));
-        NSString *origin=self.perGame && AZHasOverride(key,self.game) ? @"Game override" : @"Universal";
+        NSDictionary *resolved = self.sessionOptions ?: AZLaunchOptions(self.perGame ? self.game : nil);
+        NSString *value=AZChoiceTitle(key, resolved[key]);
+        BOOL local = self.perGame && (AZHasOverride(key,self.game) ||
+            ([key isEqual:@"AzaharJITPreset"] && (AZHasOverride(@"AzaharExperimentalJIT",self.game) ||
+                                                 AZHasOverride(@"AzaharJITSpeed",self.game))));
+        NSString *origin = local ? @"Game override" : @"Universal";
         if (self.sessionOptions) {
             content.secondaryText=AZChoiceTitle(key, self.sessionOptions[key]);
         } else content.secondaryText=self.perGame ? [NSString stringWithFormat:@"%@  ·  %@",value,origin] : value;
@@ -121,6 +155,11 @@
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 2 && ip.row == 0) {
+        self.showAdvanced = !self.showAdvanced;
+        [tableView reloadData];
+        return;
+    }
     if (self.sessionOptions) return;
     if (ip.section==0 && !self.perGame) {
         UIViewController *logs=[UIViewController new]; logs.title=@"Log Data";
@@ -144,10 +183,11 @@
         }]];
         [self presentMenu:menu row:ip]; return;
     }
-    NSString *key=AZOptionKeys()[ip.row]; NSURL *url=self.perGame ? self.game : nil;
+    NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
-                ([key isEqual:@"AzaharJITSpeed"] ? @"Fast Dispatch is the default. Turbo skips historical startup probes and uses a larger code cache; Direct RAM also enables fast page-table memory access. Both are experimental and may freeze or corrupt guest state. Relaunch to apply." :
+        message:[key isEqual:@"AzaharJITPreset"] ? @"Combined uses Turbo and Direct RAM when JIT is detected. Advanced settings lets you choose the CPU and speed mode separately." :
+                [key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
+                ([key isEqual:@"AzaharJITSpeed"] ? @"Turbo skips historical startup probes and uses a larger code cache; Direct RAM also enables fast page-table memory access. Both are experimental and may freeze or corrupt guest state. Relaunch to apply." :
                  ([key isEqual:@"AzaharDeepProfile"] ? @"Opt in to 5-second timing reports for CPU, JIT, HLE, PICA, software rasterization, and audio, plus a one-time CPU-only JIT benchmark. Profiling itself costs CPU time. Restart to apply." :
                  ([key isEqual:@"AzaharSoftwareThreads"] ? @"Choose the number of software PICA graphics worker threads. Automatic uses the current device behavior; compare the same scene to choose. Restart to apply." :
                  ([key isEqual:@"citra_graphics_api"] ? @"Vulkan uses MoltenVK to accelerate PICA200 3D rendering on the iPhone GPU. Highly experimental: it can fail to launch or render incorrectly. Software is always available as a safe fallback. Relaunch to apply." :
@@ -158,7 +198,17 @@
     }]];
     for (NSString *value in AZChoices(key)) {
         [menu addAction:[UIAlertAction actionWithTitle:AZChoiceTitle(key, value) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            AZSetValue(key,value,url); [tableView reloadData];
+            BOOL individual = [key isEqual:@"AzaharExperimentalJIT"] || [key isEqual:@"AzaharJITSpeed"];
+            BOOL customize = individual || ([key isEqual:@"AzaharJITPreset"] && [value isEqual:@"custom"]);
+            if (customize && ![AZValue(@"AzaharJITPreset",url) isEqual:@"custom"]) {
+                NSDictionary *current = AZLaunchOptions(url);
+                AZSetValue(@"AzaharExperimentalJIT", current[@"AzaharExperimentalJIT"], url);
+                AZSetValue(@"AzaharJITSpeed", current[@"AzaharJITSpeed"], url);
+                AZSetValue(@"AzaharJITPreset", @"custom", url);
+            }
+            AZSetValue(key,value,url);
+            if ([key isEqual:@"AzaharJITPreset"] && [value isEqual:@"custom"]) self.showAdvanced = YES;
+            [tableView reloadData];
         }]];
     }
     [self presentMenu:menu row:ip];

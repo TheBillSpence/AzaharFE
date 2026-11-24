@@ -12,6 +12,7 @@ on:
       - 'externals/vulkan-headers'
       - 'externals/libretro-common'
       - 'ios-app/**'
+      - 'tools/ios-input-tests/**'
       - 'src/citra_libretro/**'
       - 'src/core/arm/dynarmic/**'
       - 'externals/dynarmic'
@@ -40,6 +41,18 @@ jobs:
 
       - name: Fetch headers for the iPhone application shell
         run: git submodule update --init --depth 1 externals/libretro-common
+
+      - name: Test controller mapping, touchscreen input and JIT presets
+        shell: bash
+        run: |
+          set -euo pipefail
+          includes=(-Iios-app/AzaharIOS -Iexternals/libretro-common/libretro-common/include)
+          xcrun clang++ -std=c++17 "${includes[@]}" tools/ios-input-tests/input.cpp -o "$RUNNER_TEMP/input-test"
+          "$RUNNER_TEMP/input-test"
+          xcrun clang -fobjc-arc -c ios-app/AzaharIOS/AZOptions.m -o "$RUNNER_TEMP/options.o"
+          xcrun clang++ -std=c++17 -fobjc-arc "${includes[@]}" tools/ios-input-tests/apple.mm \
+            "$RUNNER_TEMP/options.o" -framework Foundation -framework GameController -o "$RUNNER_TEMP/apple-input-test"
+          "$RUNNER_TEMP/apple-input-test"
 
       - name: Install build tools
         run: brew install ninja xcodegen

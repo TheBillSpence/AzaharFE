@@ -59,19 +59,19 @@ public:
     Frontend::EmuWindow::CursorInfo GetCursorInfo();
 
 private:
-    int x;
-    int y;
+    int x{};
+    int y{};
 
-    float lastMouseX;
-    float lastMouseY;
+    float lastMouseX{};
+    float lastMouseY{};
 
-    float projectedX;
-    float projectedY;
+    float projectedX{};
+    float projectedY{};
 
     std::chrono::steady_clock::time_point last_moved;
-    bool isPressed;
+    bool isPressed{};
 
-    Layout::FramebufferLayout framebuffer_layout;
+    Layout::FramebufferLayout framebuffer_layout{};
     std::unique_ptr<CursorRenderer> cursor_renderer;
 };
 

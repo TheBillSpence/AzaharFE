@@ -255,6 +255,9 @@ void EmuWindow_LibRetro::PollEvents() {
             hasTouched = false;
             TouchReleased();
         }
+    } else if (hasTouched) {
+        hasTouched = false;
+        TouchReleased();
     }
 }
 

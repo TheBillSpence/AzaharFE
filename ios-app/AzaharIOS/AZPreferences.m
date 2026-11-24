@@ -8,73 +8,6 @@ UIColor *AZPanel(void) { return [UIColor colorWithRed:0.070 green:0.155 blue:0.2
 UIColor *AZBlue(void) { return [UIColor colorWithRed:0.49 green:0.76 blue:1 alpha:1]; }
 UIColor *AZYellow(void) { return [UIColor colorWithRed:1 green:0.84 blue:0.27 alpha:1]; }
 
-NSArray<NSString *> *AZOptionKeys(void) {
-    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile",
-             @"AzaharSoftwareThreads", @"citra_graphics_api", @"citra_resolution_factor",
-             @"citra_layout_option", @"citra_swap_screen"];
-}
-NSString *AZOptionTitle(NSString *key) {
-    return @{@"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
-             @"AzaharDeepProfile":@"Detailed CPU/GPU profiling",
-             @"AzaharSoftwareThreads":@"Software graphics threads",
-             @"citra_graphics_api":@"Graphics API",
-             @"citra_resolution_factor":@"Output resolution",
-             @"citra_layout_option":@"Screen layout",
-             @"citra_swap_screen":@"Primary screen"}[key];
-}
-NSArray<NSString *> *AZChoices(NSString *key) {
-    if ([key isEqual:@"AzaharExperimentalJIT"]) return @[@"off", @"on"];
-    // Fast Dispatch is the default for Build #45; an explicit compatibility
-    // selection, including any per-game override, is still respected.
-    if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"turbo", @"direct", @"linked", @"safe"];
-    if ([key isEqual:@"AzaharDeepProfile"]) return @[@"off", @"on"];
-    if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"2", @"4", @"6"];
-    // Safe default, per-game overrides require explicit experimental opt-in.
-    if ([key isEqual:@"citra_graphics_api"]) return @[@"Software", @"Vulkan"];
-    if ([key isEqual:@"citra_resolution_factor"]) return @[@"1", @"2", @"3", @"4"];
-    if ([key isEqual:@"citra_layout_option"]) return @[@"default", @"single_screen", @"large_screen", @"side_by_side"];
-    return @[@"Top", @"Bottom"];
-}
-NSString *AZChoiceTitle(NSString *key, NSString *v) {
-    if ([key isEqual:@"AzaharSoftwareThreads"] && ![v isEqual:@"auto"])
-        return [NSString stringWithFormat:@"%@ threads", v];
-    return @{@"on":@"On", @"off":@"Off",
-             @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
-             @"fast":@"Fast dispatch (default)", @"turbo":@"Turbo JIT (experimental)",
-             @"direct":@"Turbo + Direct RAM (high risk)",
-             @"auto":@"Automatic", @"Software":@"Software (safe default)",
-             @"Vulkan":@"Vulkan via MoltenVK (experimental)",
-             @"1":@"1× Native (400×240)", @"2":@"2× (800×480)",
-             @"3":@"3× (1200×720)", @"4":@"4× (1600×960)",
-             @"default":@"Top and bottom", @"single_screen":@"Single screen",
-             @"large_screen":@"Large and small", @"side_by_side":@"Side by side"}[v] ?: v;
-}
-static NSString *GameKey(NSURL *game) {
-    return [@"AZGameOptions/" stringByAppendingString:game.lastPathComponent];
-}
-BOOL AZHasOverride(NSString *key, NSURL *game) {
-    return [AZChoices(key) containsObject:[NSUserDefaults.standardUserDefaults dictionaryForKey:GameKey(game)][key] ?: @""];
-}
-NSString *AZValue(NSString *key, NSURL *game) {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (game && AZHasOverride(key, game)) return [defaults dictionaryForKey:GameKey(game)][key];
-    if ([key isEqual:@"AzaharExperimentalJIT"]) return [defaults boolForKey:key] ? @"on" : @"off";
-    NSString *value = [defaults stringForKey:key];
-    return [AZChoices(key) containsObject:value ?: @""] ? value : AZChoices(key).firstObject;
-}
-void AZSetValue(NSString *key, NSString *value, NSURL *game) {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (game) {
-        NSMutableDictionary *values = [[defaults dictionaryForKey:GameKey(game)] mutableCopy] ?: [NSMutableDictionary new];
-        values[key] = value;
-        if (values.count) [defaults setObject:values forKey:GameKey(game)];
-        else [defaults removeObjectForKey:GameKey(game)];
-    } else if ([key isEqual:@"AzaharExperimentalJIT"]) {
-        [defaults setBool:[value isEqual:@"on"] forKey:key];
-    } else {
-        [defaults setObject:value forKey:key];
-    }
-}
 NSURL *AZLogURL(void) {
     return [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"AzaharJITDiagnostics.txt"];
 }
@@ -93,7 +26,7 @@ NSURL *AZCustomArtURL(NSURL *game) {
     return [dir URLByAppendingPathComponent:hex];
 }
 void AZForgetGame(NSURL *game) {
-    [NSUserDefaults.standardUserDefaults removeObjectForKey:GameKey(game)];
+    AZResetGameOptions(game);
     [NSFileManager.defaultManager removeItemAtURL:AZCustomArtURL(game) error:nil];
 }
 

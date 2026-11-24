@@ -16,6 +16,7 @@
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "AZControllerInput.h"
 #include "../../src/citra_libretro/ios_frame_control.h"
 #include "../../src/citra_libretro/ios_moltenvk_bridge.h"
 
@@ -93,6 +94,8 @@ static bool AzaharProbeJITMapping(void (^report)(NSString *)) {
 @class AzaharEmulator;
 
 static __weak AzaharEmulator *sCurrentEmulator;
+// A failed execution test takes precedence over the passive debugger flag.
+static std::atomic<bool> sJITProbeFailed{false};
 
 @interface AzaharEmulator () {
     void *_libraryHandle;
@@ -100,7 +103,7 @@ static __weak AzaharEmulator *sCurrentEmulator;
     void (*_requestJITHalt)(void);
     std::atomic<bool> _stopping;
     std::atomic<bool> _frameQueued;
-    std::atomic<uint64_t> _buttons;
+    AZInput::State _input;
     std::atomic<bool> _jitEnabled;
     NSDictionary<NSString *, NSString *> *_gameOptions;
     std::atomic<bool> _guestRan;
@@ -144,7 +147,8 @@ static __weak AzaharEmulator *sCurrentEmulator;
 - (BOOL)handleEnvironment:(unsigned)command data:(void *)data;
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch;
-- (int16_t)inputStateForDevice:(unsigned)device identifier:(unsigned)identifier;
+- (void)pollInput;
+- (int16_t)inputStateForDevice:(unsigned)device index:(unsigned)index identifier:(unsigned)identifier;
 - (void)runGameAtURL:(NSURL *)url;
 - (BOOL)startVulkanRenderer;
 - (void)runLoadedGame;
@@ -179,11 +183,13 @@ static size_t AzaharAudioBatch(const int16_t *data, size_t frames) {
     return frames;
 }
 
-static void AzaharInputPoll(void) {}
+static void AzaharInputPoll(void) {
+    [sCurrentEmulator pollInput];
+}
 
 static int16_t AzaharInputState(unsigned port, unsigned device, unsigned index, unsigned id) {
     AzaharEmulator *host = sCurrentEmulator;
-    return port == 0 && host ? [host inputStateForDevice:device identifier:id] : 0;
+    return port == 0 && host ? [host inputStateForDevice:device index:index identifier:id] : 0;
 }
 
 static void AzaharLog(enum retro_log_level level, const char *format, ...) {
@@ -198,9 +204,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 + (NSString *)sessionJITStatus {
     AzaharEmulator *host = sCurrentEmulator;
-    if (!host || host->_stopping.load()) return @"JIT is inactive";
-    if (host->_guestRan.load()) return @"JIT is active";
-    return host->_jitPending.load() ? @"Checking JIT…" : @"JIT is inactive";
+    if (host && !host->_stopping.load() && host->_guestRan.load()) return @"JIT is active";
+    if (AzaharDebuggerIsEnabled())
+        return sJITProbeFailed.load() ? @"JIT unavailable" : @"JIT is active";
+    sJITProbeFailed.store(false);
+    return host && !host->_stopping.load() && host->_jitPending.load() ? @"Checking JIT…" : @"JIT is inactive";
 }
 
 - (NSDictionary<NSString *, NSString *> *)launchOptions { @synchronized (self) { return _gameOptions; } }
@@ -256,7 +264,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _vkGameLoaded = nullptr;
     _stopping.store(false);
     _frameQueued.store(false);
-    _buttons.store(0);
+    _input.Enable(false);
 
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *support = NSSearchPathForDirectoriesInDomains(
@@ -318,14 +326,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (![self loadLibrary:error]) return NO;
         _stopping.store(false);
         _frameQueued.store(false);
-        _buttons.store(0);
+        _input.Enable(false);
         _guestRan.store(false);
+        NSDictionary *options = AZLaunchOptions(url);
+        @synchronized (self) { _gameOptions = options; }
+        self.experimentalJITEnabled = [options[@"AzaharExperimentalJIT"] isEqual:@"on"];
         _jitPending.store(self.experimentalJITEnabled);
-        NSMutableDictionary *options = [NSMutableDictionary dictionary];
-        for (NSString *key in AZOptionKeys()) {
-            options[key] = AZValue(key, url);
-        }
-        @synchronized (self) { _gameOptions = [options copy]; }
         _vkRenderCallback = {};
         _vkNegotiation = nullptr;
         _vkInterface = nullptr;
@@ -415,7 +421,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             [self reportJITStage:@"1/7 Waiting for StikDebug debugger permission"];
 
             // Wait only on the worker so the UI can still report progress.
-            for (unsigned n = 0; n < 150 && !_stopping.load(); ++n) {
+            const bool automatic = [self.launchOptions[@"AzaharJITPreset"] isEqual:@"combined"];
+            for (unsigned n = 0; !automatic && n < 150 && !_stopping.load(); ++n) {
                 if (AzaharDebuggerIsEnabled()) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
@@ -432,6 +439,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             _jitEnabled = debugged && AzaharProbeJITMapping(^(NSString *message) {
                 [self reportJITStage:message];
             });
+            sJITProbeFailed.store(debugged && !_jitEnabled.load());
             if (_jitEnabled) {
                 [self reportJITStage:@"3/7 JIT mapping prepared; initializing core"];
             } else if (debugged) {
@@ -591,10 +599,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (elapsed >= 1.0) {
             if (_receivedFirstVideo) {
                 double fps = frameCount / elapsed;
-                BOOL usedJITCandidate = _jitEnabled;
+                BOOL executedJIT = _guestRan.load();
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self.delegate azaharEmulatorDidMeasureFPS:fps
-                                                    jitActive:usedJITCandidate];
+                                                    jitActive:executedJIT];
                 });
             }
             fpsWindow = now;
@@ -640,6 +648,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (!variable || !variable->key) return NO;
             NSString *key = [NSString stringWithUTF8String:variable->key];
             NSString *value = key ? self.launchOptions[key] : nil;
+            // The touchscreen supplies the stylus independently of the C-Stick.
+            if ([key isEqual:@"citra_analog_function"]) value = @"c_stick";
             variable->value = value.UTF8String;
             return value != nil;
         }
@@ -703,17 +713,28 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     }
 }
 
-- (int16_t)inputStateForDevice:(unsigned)device identifier:(unsigned)identifier {
-    if (device != RETRO_DEVICE_JOYPAD || identifier >= 64) return 0;
-    return (_buttons.load() & (uint64_t(1) << identifier)) != 0 ? 1 : 0;
+- (void)pollInput {
+    AZInput::Pad pad;
+    for (GCController *controller in GCController.controllers) {
+        GCExtendedGamepad *gamepad = controller.extendedGamepad;
+        if (!gamepad) continue;
+        pad = AZInput::ReadGamepad(gamepad);
+        break;
+    }
+    _input.Poll(pad);
+}
+
+- (int16_t)inputStateForDevice:(unsigned)device index:(unsigned)index identifier:(unsigned)identifier {
+    return _input.Read(device, index, identifier);
 }
 
 - (void)setButton:(unsigned)identifier pressed:(BOOL)pressed {
-    if (identifier >= 64) return;
-    uint64_t mask = uint64_t(1) << identifier;
-    if (pressed) _buttons.fetch_or(mask);
-    else _buttons.fetch_and(~mask);
+    _input.Button(identifier, pressed);
 }
+
+- (void)setInputEnabled:(BOOL)enabled { _input.Enable(enabled); }
+- (void)setPointerX:(int16_t)x y:(int16_t)y pressed:(BOOL)down { _input.Touch({x, y, down != NO}); }
+- (void)setCircleX:(int16_t)x y:(int16_t)y { _input.Circle(x, y); }
 
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
@@ -793,7 +814,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)stop {
     _stopping.store(true);
-    _buttons.store(0);
+    _input.Enable(false);
     [self requestJITHalt];
 }
 
