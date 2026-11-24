@@ -18,7 +18,7 @@ struct Playback {
 void FillBuffer(void *context, AudioQueueRef queue, AudioQueueBufferRef buffer) {
     auto *state = static_cast<Playback *>(context);
     if (!state->running.load(std::memory_order_acquire)) return;
-    state->pcm.Pull(static_cast<int16_t *>(buffer->mAudioData), kBufferFrames);
+    state->pcm.PullBuffered(static_cast<int16_t *>(buffer->mAudioData), kBufferFrames, 1536);
     buffer->mAudioDataByteSize = kBufferBytes;
     if (state->running.load(std::memory_order_acquire))
         AudioQueueEnqueueBuffer(queue, buffer, 0, nullptr);

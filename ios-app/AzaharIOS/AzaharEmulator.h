@@ -18,6 +18,8 @@
 // Loads the bundled libretro dylib and starts the emulation loop on a worker queue.
 - (BOOL)startGameAtURL:(NSURL *)url error:(NSError **)error;
 - (void)stop;
+- (void)setPaused:(BOOL)paused;
+- (void)refreshAudioRoute;
 - (void)setInputEnabled:(BOOL)enabled;
 - (void)setPointerX:(int16_t)x y:(int16_t)y pressed:(BOOL)down;
 - (void)setCircleX:(int16_t)x y:(int16_t)y;

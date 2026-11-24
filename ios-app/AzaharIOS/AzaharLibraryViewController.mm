@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <ImageIO/ImageIO.h>
+#import <AVFoundation/AVFoundation.h>
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
 #import "AZSettings.h"
@@ -135,6 +136,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, strong) AZTouchScreen *screen;
 @property (nonatomic, strong) AZCirclePad *circlePad;
 @property (nonatomic) BOOL settingsOpen;
+@property (nonatomic) BOOL audioInterrupted;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, assign) BOOL started;
 @end
@@ -166,6 +168,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
     [notifications addObserver:self selector:@selector(appInactive:) name:UIApplicationWillResignActiveNotification object:nil];
     [notifications addObserver:self selector:@selector(appActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [notifications addObserver:self selector:@selector(audioInterrupted:) name:AVAudioSessionInterruptionNotification object:nil];
+    [notifications addObserver:self selector:@selector(audioReset:) name:AVAudioSessionMediaServicesWereResetNotification object:nil];
     self.screen = [AZTouchScreen new];
     self.screen.userInteractionEnabled = YES;
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
@@ -291,17 +295,28 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)refreshInput {
-    BOOL enabled = !self.settingsOpen && self.viewIfLoaded.window &&
+    BOOL enabled = !self.settingsOpen && !self.audioInterrupted && self.viewIfLoaded.window &&
         self.navigationController.topViewController == self &&
         UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    [self.host setPaused:!enabled];
     [self.host setInputEnabled:enabled];
     if (!enabled) [self.circlePad centerStick];
 }
 - (void)appInactive:(NSNotification *)note {
+    [self.host setPaused:YES];
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
 }
-- (void)appActive:(NSNotification *)note { [self refreshInput]; }
+- (void)appActive:(NSNotification *)note {
+    self.audioInterrupted = NO;
+    [self refreshInput];
+}
+- (void)audioInterrupted:(NSNotification *)note {
+    self.audioInterrupted = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan;
+    [self refreshInput];
+}
+- (void)audioReset:(NSNotification *)note { [self.host refreshAudioRoute]; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 - (void)showSettings {
     self.settingsOpen = YES;
@@ -343,6 +358,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    [self.host setPaused:YES];
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
     if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) [self.host stop];

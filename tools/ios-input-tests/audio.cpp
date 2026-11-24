@@ -21,4 +21,11 @@ int main() {
     buffer.Push(first, 3);
     assert(buffer.Pull(out, 4) == 4);
     assert(out[0] == big[6]);
+    buffer.Clear();
+    buffer.Push(first, 2);
+    assert(buffer.PullBuffered(out, 4, 3) == 0);
+    buffer.Push(first + 4, 1);
+    assert(buffer.PullBuffered(out, 4, 3) == 3);
+    assert(out[0] == 1 && out[4] == 3 && out[6] == 0);
+    assert(buffer.PullBuffered(out, 4, 3) == 0);
 }

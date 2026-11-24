@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -104,6 +105,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     AZAudioOutput *_audioOutput;
     void (*_requestJITHalt)(void);
     std::atomic<bool> _stopping;
+    std::atomic<bool> _paused;
+    std::atomic<uint64_t> _audioEpoch;
     std::atomic<bool> _frameQueued;
     AZInput::State _input;
     std::atomic<bool> _jitEnabled;
@@ -156,6 +159,7 @@ static std::atomic<bool> sJITProbeFailed{false};
 - (void)runGameAtURL:(NSURL *)url;
 - (BOOL)startVulkanRenderer;
 - (void)runLoadedGame;
+- (void)replaceAudioWithSampleRate:(double)rate;
 - (void)reportJITStage:(NSString *)message;
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices;
 - (void)requestJITHalt;
@@ -269,6 +273,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _vkShutdown = nullptr;
     _vkGameLoaded = nullptr;
     _stopping.store(false);
+    _paused.store(false);
+    _audioEpoch.store(0);
     _frameQueued.store(false);
     _input.Enable(false);
 
@@ -332,6 +338,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         }
         if (![self loadLibrary:error]) return NO;
         _stopping.store(false);
+        _paused.store(false);
+        _audioEpoch.store(0);
         _frameQueued.store(false);
         _input.Enable(false);
         _guestRan.store(false);
@@ -369,8 +377,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         [self runGameAtURL:url];
-        [_audioOutput stop];
-        _audioOutput = nil;
+        [self replaceAudioWithSampleRate:0];
         {
             // No stop callback may outlive the dynamic library containing it.
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
@@ -494,17 +501,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             NSString *failure = nil;
             if (!retrySoftware && loaded) {
                 [self reportJITStage:@"6/7 Game loaded; starting first frame"];
-                struct retro_system_av_info av = {};
-                _getAVInfo(&av);
-                _audioOutput = [AZAudioOutput new];
-                if ([_audioOutput startWithSampleRate:av.timing.sample_rate]) {
-                    [self writeDiagnostic:[NSString stringWithFormat:@"Audio: stereo PCM at %.0f Hz", av.timing.sample_rate]];
-                } else {
-                    [self writeDiagnostic:@"Audio output unavailable; continuing without sound"];
-                }
                 [self runLoadedGame];
-                [_audioOutput stop];
-                _audioOutput = nil;
+                [self replaceAudioWithSampleRate:0];
                 _unloadGame();
                 const auto recovery = LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo);
                 retrySoftware = recovery == LibRetro::ReadbackRecovery::RetrySoftware;
@@ -543,7 +541,35 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (void)receiveAudio:(const int16_t *)data frames:(size_t)frames {
-    if (!_stopping.load()) [_audioOutput appendSamples:data frames:frames];
+    if (_stopping.load() || _paused.load()) return;
+    AZAudioOutput *output;
+    @synchronized (self) { output = _audioOutput; }
+    [output appendSamples:data frames:frames];
+}
+
+- (void)setPaused:(BOOL)paused {
+    if (_stopping.load()) return;
+    if (_paused.exchange(paused != NO) != (paused != NO)) {
+        _audioEpoch.fetch_add(1);
+        if (paused) _input.Enable(false);
+    }
+}
+
+- (void)refreshAudioRoute { _audioEpoch.fetch_add(1); }
+
+// Only the emulation worker manages the audio session and queue.
+- (void)replaceAudioWithSampleRate:(double)rate {
+    AZAudioOutput *old;
+    @synchronized (self) { old = _audioOutput; _audioOutput = nil; }
+    [old stop];
+    if (rate <= 0 || _stopping.load() || _paused.load()) return;
+    AZAudioOutput *output = [AZAudioOutput new];
+    if ([output startWithSampleRate:rate]) {
+        @synchronized (self) { _audioOutput = output; }
+        [self writeDiagnostic:[NSString stringWithFormat:@"Audio: stereo PCM at %.0f Hz", rate]];
+    } else {
+        [self writeDiagnostic:@"Audio output unavailable; continuing without sound"];
+    }
 }
 
 - (BOOL)startVulkanRenderer {
@@ -565,6 +591,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (void)runLoadedGame {
+    struct retro_system_av_info av = {};
+    _getAVInfo(&av);
+    const double fpsTarget = std::isfinite(av.timing.fps) && av.timing.fps >= 1 && av.timing.fps <= 240 ? av.timing.fps : 60.0;
+    const auto framePeriod = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / fpsTarget));
+    uint64_t audioEpoch = UINT64_MAX;
     auto nextFrame = std::chrono::steady_clock::now();
     auto fpsWindow = nextFrame;
     unsigned frameCount = 0;
@@ -580,6 +611,21 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         [self scheduleFirstFrameCheckForSession:_playSession started:nextFrame previousSlices:0 initial:YES];
     }
     while (!_stopping.load()) {
+        const auto epoch = _audioEpoch.load();
+        if (audioEpoch != epoch) {
+            audioEpoch = epoch;
+            [self replaceAudioWithSampleRate:_paused.load() ? 0 : av.timing.sample_rate];
+            nextFrame = fpsWindow = performanceWindow = std::chrono::steady_clock::now();
+            frameCount = emulatedFrames = 0;
+            coreRunMilliseconds = 0;
+            _readbackAttempts = 0;
+            _readbackMilliseconds = 0;
+            previousImages = _deliveredImages.load();
+        }
+        if (_paused.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         const auto runStarted = std::chrono::steady_clock::now();
         @autoreleasepool {
             _runFrame();
@@ -587,6 +633,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         const auto now = std::chrono::steady_clock::now();
         if (_stopping.load() || LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo) !=
                                 LibRetro::ReadbackRecovery::Continue) break;
+        if (_paused.load() || audioEpoch != _audioEpoch.load()) continue;
         ++frameCount;
         const double coreRunMs =
             std::chrono::duration<double, std::milli>(now - runStarted).count();
@@ -631,7 +678,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             fpsWindow = now;
             frameCount = 0;
         }
-        nextFrame += std::chrono::milliseconds(16);
+        nextFrame += framePeriod;
         if (nextFrame < now) nextFrame = now;
         std::this_thread::sleep_until(nextFrame);
     }
@@ -762,7 +809,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
     if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
-        _frameQueued.exchange(true)) return;
+        _stopping.load() || _paused.load() || _frameQueued.exchange(true)) return;
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
     if (hardware) {
         const auto started = std::chrono::steady_clock::now();
@@ -798,7 +845,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (frame) {
             UIImage *image = [UIImage imageWithCGImage:frame];
             id<AzaharEmulatorDelegate> delegate = self.delegate;
-            if (delegate && !_stopping.load()) {
+            if (delegate && !_stopping.load() && !_paused.load()) {
                 [delegate azaharEmulatorDidRenderImage:image];
                 if (_deliveredImages.fetch_add(1, std::memory_order_relaxed) == 0) {
                     [self reportJITStage:hardware ? @"First MoltenVK image delivered to the game view"
@@ -817,7 +864,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (slices && _waitingForFirstFrame.load(std::memory_order_relaxed)) {
         _completedSlices.fetch_add(1, std::memory_order_relaxed);
     }
-    return _stopping.load();
+    return _stopping.load() || _paused.load();
 }
 
 - (void)requestJITHalt {
@@ -836,9 +883,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (void)stop {
-    _stopping.store(true);
+    if (_stopping.exchange(true)) return;
     _input.Enable(false);
-    [self requestJITHalt];
+    // Do not block UIKit on the core or its JIT bridge lock.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [self requestJITHalt];
+    });
 }
 
 @end
