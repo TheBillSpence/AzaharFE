@@ -157,6 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 ios-app/patches/apply-ios-jit-memory.py
+          python3 ios-app/patches/apply-guarded-fastmem.py
 
       - name: Configure libretro software core for iOS ARM64
         run: |

@@ -399,6 +399,11 @@ void ARM_Dynarmic::Run() {
     }
 
 #ifdef IOS
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (current_page_table) {
+        current_page_table->SyncIOSFastmem();
+    }
+#endif
     AzaharScopedJITRun active_jit{jit};
     if (gAzaharJITTurboStartup.load(std::memory_order_relaxed)) {
         // Experimental direct startup: maintain timer limits and the JIT halt
@@ -559,6 +564,11 @@ void ARM_Dynarmic::Step() {
     if (trace_first_step) {
         LibRetro::DisplayMessage("JIT27TRACE Dynarmic::Step entered");
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (current_page_table) {
+        current_page_table->SyncIOSFastmem();
+    }
+#endif
     AzaharScopedJITRun active_step{jit};
 #endif
     jit->Step();
@@ -746,6 +756,12 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
         config.detect_misaligned_access_via_page_table = 16 | 32 | 64;
         config.only_detect_misalignment_via_page_table_on_page_boundary = true;
     }
+    bool fastmem_mapped = false;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (IOSJitTrueFastmem(jit_mode) && current_page_table) {
+        fastmem_mapped = current_page_table->ConfigureIOSFastmem(config);
+    }
+#endif
     config.enable_cycle_counting = true;
     // Leave Dynarmic's optional page table unset to isolate generated direct
     // memory accesses from the rest of the iOS JIT. Loads and stores then use
@@ -753,7 +769,8 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     char optimization_status[200];
     std::snprintf(optimization_status, sizeof(optimization_status),
                   "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s",
-                  jit_mode.c_str(), config.page_table ? "page table" : "callbacks",
+                  jit_mode.c_str(), fastmem_mapped ? "guarded 4GiB fastmem" :
+                                                      config.page_table ? "page table" : "callbacks",
                   config.code_cache_size / (1024 * 1024), hyper_mode ? "full deadline" : "capped",
                   config.unsafe_optimizations ? "on" : "off");
     LibRetro::DisplayMessage(optimization_status);

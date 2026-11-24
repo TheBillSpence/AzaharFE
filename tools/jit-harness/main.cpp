@@ -481,7 +481,7 @@ void TestOptimizationMode(const std::string& mode) {
                 "hyper scheduler deadline was truncated");
         Require(Core::LimitJitBudget(-1, Core::HyperJitCap(true)) == 0,
                 "hyper ignored expired deadline");
-        Require(config.code_cache_size == 64 * 1024 * 1024 && config.page_table,
+        Require(config.code_cache_size == 128 * 1024 * 1024 && config.page_table,
                 "hyper config does not match device");
         Require(!config.HasOptimization(Dynarmic::OptimizationFlag::Unsafe_IgnoreGlobalMonitor),
                 "exclusive monitor must remain enabled");

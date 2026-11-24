@@ -15,6 +15,7 @@ on:
       - 'src/core/arm/dynarmic/**'
       - 'externals/dynarmic'
       - 'ios-app/patches/dynarmic-host-monitor.patch'
+      - 'ios-app/patches/apply-guarded-fastmem.py'
 # Keep only the most recent commit in the runner queue. Older attempts are
 # still available in Actions history, but do not consume scarce ARM64 runners.
 concurrency:
@@ -49,6 +50,9 @@ jobs:
           git -C externals/dynarmic rev-parse HEAD
       - name: Use the compiled ARM64 host lock for exclusive accesses
         run: git -C externals/dynarmic apply "$GITHUB_WORKSPACE/ios-app/patches/dynarmic-host-monitor.patch"
+
+      - name: Patch guarded fastmem emitter
+        run: python3 ios-app/patches/apply-guarded-fastmem.py
 
       - name: Install macOS build tools
         if: runner.os == 'macOS'

@@ -21,7 +21,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITPreset"]) return @[@"combined", @"off", @"custom"];
     if ([key isEqual:@"AzaharExperimentalJIT"]) return @[@"off", @"on"];
     // The first value preserves the speed default for legacy manual configurations.
-    if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
+    if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"fastmem", @"fastmemfp", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
     if ([key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
     if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"2", @"4", @"6"];
@@ -34,10 +34,11 @@ NSArray<NSString *> *AZChoices(NSString *key) {
 NSString *AZChoiceTitle(NSString *key, NSString *v) {
     if ([key isEqual:@"AzaharSoftwareThreads"] && ![v isEqual:@"auto"])
         return [NSString stringWithFormat:@"%@ threads", v];
-    return @{@"combined":@"Automatic (Hyper JIT experiment)", @"custom":@"Advanced settings",
+    return @{@"combined":@"Automatic (128 MiB Fastmem)", @"custom":@"Advanced settings",
              @"on":@"On", @"off":@"Off", @"enabled":@"Enabled", @"disabled":@"Disabled",
              @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
-             @"fast":@"Fast dispatch", @"hyper":@"Hyper JIT (full scheduler slice)",
+             @"fast":@"Fast dispatch", @"fastmem":@"128 MiB + True Fastmem",
+             @"fastmemfp":@"128 MiB + Fastmem + relaxed FP", @"hyper":@"Hyper JIT (page table)",
              @"hyperfp":@"Hyper JIT + relaxed FP (highest risk)", @"turbo":@"Turbo JIT (experimental)",
              @"direct":@"Turbo + Direct RAM (high risk)",
              @"auto":@"Automatic", @"Software":@"Software (safe default)",
@@ -76,7 +77,7 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
     NSString *preset = values[@"AzaharJITPreset"];
     if ([preset isEqual:@"combined"]) {
         values[@"AzaharExperimentalJIT"] = @"on";
-        values[@"AzaharJITSpeed"] = @"hyper";
+        values[@"AzaharJITSpeed"] = @"fastmem";
     } else if ([preset isEqual:@"off"]) {
         values[@"AzaharExperimentalJIT"] = @"off";
     } else if (game && (AZHasOverride(@"AzaharJITPreset", game) ||
@@ -85,7 +86,7 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
         if (!AZHasOverride(@"AzaharExperimentalJIT", game) && ![universal isEqual:@"custom"])
             values[@"AzaharExperimentalJIT"] = [universal isEqual:@"combined"] ? @"on" : @"off";
         if (!AZHasOverride(@"AzaharJITSpeed", game) && [universal isEqual:@"combined"])
-            values[@"AzaharJITSpeed"] = @"hyper";
+            values[@"AzaharJITSpeed"] = @"fastmem";
     }
     return [values copy];
 }

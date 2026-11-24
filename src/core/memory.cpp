@@ -45,6 +45,11 @@ constexpr u32 SIGSEGV = 11;
 namespace Memory {
 
 void PageTable::Clear() {
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+    if (pointers.fastmem) {
+        pointers.fastmem->Reset();
+    }
+#endif
     pointers.raw.fill(nullptr);
     pointers.refs.fill(MemoryRef());
     attributes.fill(PageType::Unmapped);

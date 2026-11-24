@@ -12,6 +12,9 @@
 #include "common/common_types.h"
 #include "common/memory_ref.h"
 #include "common/swap.h"
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+#include "core/arm/dynarmic/ios_fastmem_arena.h"
+#endif
 
 namespace Kernel {
 class Process;
@@ -72,6 +75,11 @@ struct PageTable {
             Entry(Pointers& pointers_, VAddr idx_) : pointers(pointers_), idx(idx_) {}
 
             Entry& operator=(MemoryRef value) {
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+                if (pointers.fastmem) {
+                    pointers.fastmem->Invalidate(idx);
+                }
+#endif
                 pointers.raw[idx] = value.GetPtr();
                 pointers.refs[idx] = std::move(value);
                 return *this;
@@ -97,6 +105,9 @@ struct PageTable {
     private:
         std::array<u8*, PAGE_TABLE_NUM_ENTRIES> raw;
         std::array<MemoryRef, PAGE_TABLE_NUM_ENTRIES> refs;
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+        std::unique_ptr<Core::IOSFastmemArena> fastmem;
+#endif
         friend struct PageTable;
     };
 
@@ -111,6 +122,33 @@ struct PageTable {
     std::array<u8*, PAGE_TABLE_NUM_ENTRIES>& GetPointerArray() {
         return pointers.raw;
     }
+
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+    template <typename Config>
+    bool ConfigureIOSFastmem(Config& config) {
+        if constexpr (requires(Config c) { c.guarded_fastmem_table; }) {
+            if (!pointers.fastmem) {
+                pointers.fastmem = std::make_unique<Core::IOSFastmemArena>();
+            }
+            if (!pointers.fastmem->Available()) {
+                return false;
+            }
+            pointers.fastmem->Sync(pointers.raw);
+            config.fastmem_pointer = pointers.fastmem->Base();
+            config.guarded_fastmem_table = pointers.fastmem->Guard();
+            config.fastmem_exclusive_access = false;
+            config.recompile_on_fastmem_failure = false;
+            return true;
+        }
+        return false;
+    }
+
+    void SyncIOSFastmem() {
+        if (pointers.fastmem) {
+            pointers.fastmem->Sync(pointers.raw);
+        }
+    }
+#endif
 
     struct WatchpointPageInfo {
         u32 watchpoint_count{};
@@ -133,6 +171,11 @@ struct PageTable {
 private:
     template <class Archive>
     void serialize(Archive& ar, const unsigned int) {
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+        if (pointers.fastmem) {
+            pointers.fastmem->Reset();
+        }
+#endif
         ar & pointers.refs;
         ar & attributes;
         ar & watchpoint_pages_map;

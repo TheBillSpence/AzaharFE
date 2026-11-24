@@ -12,19 +12,22 @@ namespace Core {
 
 // Keep one policy shared by the actual iOS CPU and native ARM64 harness.
 constexpr bool IOSJitHyper(std::string_view mode) {
-    return mode == "hyper" || mode == "hyperfp";
+    return mode == "hyper" || mode == "hyperfp" || mode == "fastmem" || mode == "fastmemfp";
 }
 constexpr bool IOSJitDirectMemory(std::string_view mode) {
     return mode == "direct" || IOSJitHyper(mode);
 }
 constexpr bool IOSJitRelaxedFP(std::string_view mode) {
-    return mode == "hyperfp";
+    return mode == "hyperfp" || mode == "fastmemfp";
 }
 constexpr bool IOSJitSkipProbes(std::string_view mode) {
     return mode == "turbo" || IOSJitDirectMemory(mode);
 }
+constexpr bool IOSJitTrueFastmem(std::string_view mode) {
+    return mode == "fastmem" || mode == "fastmemfp";
+}
 constexpr std::size_t IOSJitCacheSize(std::string_view mode) {
-    return (IOSJitHyper(mode) ? 64 : IOSJitSkipProbes(mode) ? 32 : 16) * 1024 * 1024;
+    return (IOSJitHyper(mode) ? 128 : IOSJitSkipProbes(mode) ? 32 : 16) * 1024 * 1024;
 }
 
 // Mode selection affects only newly constructed JITs. Never hot-patch code.
