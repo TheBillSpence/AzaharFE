@@ -65,8 +65,27 @@ jobs:
           xcodegen --version
           cmake --version
 
-      - name: Generate AzaharFE application icon
-        run: python3 ios-app/scripts/generate-app-icon.py
+      - name: Prepare supplied AzaharFE lightning application icon
+        run: |
+          set -euo pipefail
+          source="ios-app/artwork/AzaharFE-lightning.webp"
+          icon="ios-app/AzaharIOS/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+          echo "6addf7ad0f0966a0c26aa1d99de5c30b14fca7588f31a7877476775695f4084f  $source" | shasum -a 256 -c -
+          mkdir -p "$(dirname "$icon")"
+          sips -s format png "$source" --out "$RUNNER_TEMP/AzaharFE-icon-source.png"
+          sips -z 1024 1024 "$RUNNER_TEMP/AzaharFE-icon-source.png" --out "$icon"
+          python3 - "$icon" <<'PY'
+          import struct
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          assert data[:8] == b"\x89PNG\r\n\x1a\n", "Not a PNG"
+          width, height, depth, color = struct.unpack(">IIBB", data[16:26])
+          assert (width, height) == (1024, 1024), "Incorrect icon size"
+          assert color == 2 and depth == 8, "Icon must be opaque RGB"
+          print("Verified supplied 1024x1024 RGB lightning icon")
+          PY
 
       - name: Test stereo audio buffer
         run: |
