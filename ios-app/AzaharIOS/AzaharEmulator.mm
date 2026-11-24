@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include "../../src/citra_libretro/ios_frame_control.h"
+#include "../../src/citra_libretro/ios_moltenvk_bridge.h"
 
 // Apple's CS_DEBUGGED flag indicates that a debugger has granted JIT access.
 static bool AzaharDebuggerIsEnabled() {
@@ -119,12 +120,14 @@ static __weak AzaharEmulator *sCurrentEmulator;
     const void *_vkNegotiation;
     void *_vkInterface;
     bool _vkRequested;
-    bool _vkReadbackErrorReported;
-    bool (*_vkStart)(const void *);
-    const void *(*_vkGetInterface)(void);
-    bool (*_vkReadback)(unsigned, unsigned, const void **, size_t *);
-    void (*_vkShutdown)(void);
-    bool (*_vkGameLoaded)(void);
+    unsigned _readbackFailures;
+    unsigned _readbackAttempts;
+    double _readbackMilliseconds;
+    decltype(&azahar_ios_vk_start) _vkStart;
+    decltype(&azahar_ios_vk_get_interface) _vkGetInterface;
+    decltype(&azahar_ios_vk_readback) _vkReadback;
+    decltype(&azahar_ios_vk_shutdown) _vkShutdown;
+    decltype(&azahar_ios_vk_game_loaded) _vkGameLoaded;
 
     decltype(&retro_set_environment) _setEnvironment;
     decltype(&retro_set_video_refresh) _setVideoRefresh;
@@ -143,6 +146,8 @@ static __weak AzaharEmulator *sCurrentEmulator;
                height:(unsigned)height pitch:(size_t)pitch;
 - (int16_t)inputStateForDevice:(unsigned)device identifier:(unsigned)identifier;
 - (void)runGameAtURL:(NSURL *)url;
+- (BOOL)startVulkanRenderer;
+- (void)runLoadedGame;
 - (void)reportJITStage:(NSString *)message;
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices;
 - (void)requestJITHalt;
@@ -198,7 +203,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     return host->_jitPending.load() ? @"Checking JIT…" : @"JIT is inactive";
 }
 
-- (NSDictionary<NSString *, NSString *> *)launchOptions { return _gameOptions; }
+- (NSDictionary<NSString *, NSString *> *)launchOptions { @synchronized (self) { return _gameOptions; } }
 
 - (BOOL)jitActive { return _jitEnabled; }
 
@@ -243,7 +248,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _vkNegotiation = nullptr;
     _vkInterface = nullptr;
     _vkRequested = false;
-    _vkReadbackErrorReported = false;
+    _readbackFailures = 0;
     _vkStart = nullptr;
     _vkGetInterface = nullptr;
     _vkReadback = nullptr;
@@ -320,12 +325,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         for (NSString *key in AZOptionKeys()) {
             options[key] = AZValue(key, url);
         }
-        _gameOptions = [options copy];
+        @synchronized (self) { _gameOptions = [options copy]; }
         _vkRenderCallback = {};
         _vkNegotiation = nullptr;
         _vkInterface = nullptr;
         _vkRequested = false;
-        _vkReadbackErrorReported = false;
+        _readbackFailures = 0;
         _playSession = [NSObject new];
         _completedSlices.store(0);
         _waitingForFirstFrame.store(false);
@@ -438,15 +443,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
         if (_stopping.load()) return;
         _setEnvironment(AzaharEnvironment);
-        _vkStart = reinterpret_cast<bool (*)(const void *)>(
+        _vkStart = reinterpret_cast<decltype(_vkStart)>(
             dlsym(_libraryHandle, "azahar_ios_vk_start"));
-        _vkGetInterface = reinterpret_cast<const void *(*)(void)>(
+        _vkGetInterface = reinterpret_cast<decltype(_vkGetInterface)>(
             dlsym(_libraryHandle, "azahar_ios_vk_get_interface"));
-        _vkReadback = reinterpret_cast<bool (*)(unsigned, unsigned, const void **, size_t *)>(
+        _vkReadback = reinterpret_cast<decltype(_vkReadback)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback"));
-        _vkShutdown = reinterpret_cast<void (*)(void)>(
+        _vkShutdown = reinterpret_cast<decltype(_vkShutdown)>(
             dlsym(_libraryHandle, "azahar_ios_vk_shutdown"));
-        _vkGameLoaded = reinterpret_cast<bool (*)(void)>(
+        _vkGameLoaded = reinterpret_cast<decltype(_vkGameLoaded)>(
             dlsym(_libraryHandle, "azahar_ios_vk_game_loaded"));
         {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
@@ -461,138 +466,153 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _setAudioBatch(AzaharAudioBatch);
         _setInputPoll(AzaharInputPoll);
         _setInputState(AzaharInputState);
-        [self reportJITStage:@"4/7 Calling retro_init"];
-        _initCore();
-        [self reportJITStage:@"5/7 Core initialized; loading game"];
-
         struct retro_game_info game = {};
         game.path = url.fileSystemRepresentation;
-
-        BOOL loaded = _loadGame(&game);
-        if (loaded && _vkRequested) {
-            BOOL started = _vkStart && _vkGetInterface && _vkReadback && _vkShutdown &&
-                           _vkGameLoaded && _vkNegotiation && _vkRenderCallback.context_reset &&
-                           _vkStart(_vkNegotiation);
-            if (started) {
-                _vkInterface = const_cast<void *>(_vkGetInterface());
-                if (_vkInterface) {
-                    [self reportJITStage:@"JIT27TRACE MoltenVK device ready; initializing Vulkan PICA200"];
-                    try {
-                        _vkRenderCallback.context_reset();
-                        started = _vkGameLoaded();
-                    } catch (const std::exception& ex) {
-                        [self reportJITStage:[NSString stringWithFormat:
-                            @"JIT27TRACE MoltenVK renderer initialization failed: %s", ex.what()]];
-                        started = NO;
-                    } catch (...) {
-                        [self reportJITStage:@"JIT27TRACE MoltenVK renderer raised an exception"];
-                        started = NO;
-                    }
-                } else {
-                    started = NO;
-                }
+        while (!_stopping.load()) {
+            [self reportJITStage:@"4/7 Calling retro_init"];
+            _initCore();
+            [self reportJITStage:@"5/7 Core initialized; loading game"];
+            BOOL loaded = _loadGame(&game);
+            BOOL retrySoftware = _vkRequested && (!loaded || ![self startVulkanRenderer]);
+            NSString *failure = nil;
+            if (!retrySoftware && loaded) {
+                [self reportJITStage:@"6/7 Game loaded; starting first frame"];
+                [self runLoadedGame];
+                _unloadGame();
+                const auto recovery = LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo);
+                retrySoftware = recovery == LibRetro::ReadbackRecovery::RetrySoftware;
+                if (recovery == LibRetro::ReadbackRecovery::ReportFailure)
+                    failure = @"Vulkan stopped returning video. Select Software in this game's Graphics API settings and reopen the game.";
+            } else if (!retrySoftware) {
+                @synchronized (self) { failure = _lastMessage; }
+                if (!failure) failure = @"Azahar couldn't load this game. Check the ROM format and whether it is decrypted.";
             }
-            if (!started) {
-                // An unavailable GPU driver must never prevent games from
-                // working in the existing software rendering mode.
-                [self reportJITStage:@"JIT27TRACE MoltenVK initialization failed; retrying software renderer"];
-                _deinitCore();
-                if (_vkShutdown) _vkShutdown();
-                _vkInterface = nullptr;
-                _vkNegotiation = nullptr;
-                _vkRequested = false;
-                _vkRenderCallback = {};
-                NSMutableDictionary *fallback = [_gameOptions mutableCopy];
-                fallback[@"citra_graphics_api"] = @"Software";
-                _gameOptions = [fallback copy];
-                _initCore();
-                loaded = _loadGame(&game);
-            }
-        }
-        [self reportJITStage:loaded ? @"6/7 Game loaded; starting first frame"
-                                    : @"Game load failed"];
-        if (!loaded) {
-            NSString *message;
-            @synchronized (self) { message = _lastMessage; }
-            if (!message) message = @"Azahar couldn't load this game. Check the ROM format and whether it is decrypted.";
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self.delegate azaharEmulatorDidFail:message];
-            });
-        } else {
-            auto nextFrame = std::chrono::steady_clock::now();
-            auto fpsWindow = nextFrame;
-            unsigned frameCount = 0;
-            auto performanceWindow = nextFrame;
-            unsigned emulatedFrames = 0;
-            double coreRunMilliseconds = 0.0;
-            uint64_t previousImages = 0;
-            bool firstFrame = true;
-            if (_jitEnabled) {
-                _waitingForFirstFrame.store(true);
-                [self scheduleFirstFrameCheckForSession:_playSession started:nextFrame previousSlices:0 initial:YES];
-            }
-            while (!_stopping.load()) {
-                const auto runStarted = std::chrono::steady_clock::now();
-                @autoreleasepool {
-                    _runFrame();
-                }
-                const auto now = std::chrono::steady_clock::now();
-                if (_stopping.load()) break;
-                ++frameCount;
-                const double coreRunMs =
-                    std::chrono::duration<double, std::milli>(now - runStarted).count();
-                if (firstFrame && _receivedFirstVideo) {
-                    firstFrame = false;
-                    performanceWindow = now;
-                    previousImages = _deliveredImages.load(std::memory_order_relaxed);
-                    [self reportJITStage:@"7/7 First video frame received; measuring FPS"];
-                } else if (!firstFrame) {
-                    ++emulatedFrames;
-                    coreRunMilliseconds += coreRunMs;
-                    const double seconds = std::chrono::duration<double>(now - performanceWindow).count();
-                    if (seconds >= 5.0) {
-                        const auto images = _deliveredImages.load(std::memory_order_relaxed);
-                        [self writeDiagnostic:[NSString stringWithFormat:
-                            @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs; mean retro_run %.1f ms",
-                            emulatedFrames / seconds, (images - previousImages) / seconds, seconds,
-                            coreRunMilliseconds / emulatedFrames]];
-                        performanceWindow = now;
-                        emulatedFrames = 0;
-                        coreRunMilliseconds = 0.0;
-                        previousImages = images;
-                    }
-                }
-                double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
-                if (elapsed >= 1.0) {
-                    if (_receivedFirstVideo) {
-                        double fps = frameCount / elapsed;
-                        BOOL usedJITCandidate = _jitEnabled;
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [self.delegate azaharEmulatorDidMeasureFPS:fps
-                                                            jitActive:usedJITCandidate];
-                        });
-                    }
-                    fpsWindow = now;
-                    frameCount = 0;
-                }
-                nextFrame += std::chrono::milliseconds(16);
-                if (nextFrame < now) nextFrame = now;
-                std::this_thread::sleep_until(nextFrame);
-            }
-            _waitingForFirstFrame.store(false);
-            _unloadGame();
-        }
-
-        _deinitCore();
-        if (_vkShutdown) {
-            _vkShutdown();
+            _deinitCore();
+            if (_vkShutdown) _vkShutdown();
             _vkInterface = nullptr;
+            if (_stopping.load()) break;
+            if (failure) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.delegate azaharEmulatorDidFail:failure];
+                });
+                break;
+            }
+            if (!retrySoftware) break;
+            [self reportJITStage:@"MoltenVK failed to start or return pixels; retrying with Software"];
+            @synchronized (self) {
+                NSMutableDictionary *options = [_gameOptions mutableCopy];
+                options[@"citra_graphics_api"] = @"Software";
+                _gameOptions = [options copy];
+                _lastMessage = nil;
+            }
+            @synchronized (AzaharEmulator.class) { _playSession = [NSObject new]; }
+            _completedSlices.store(0);
+            _vkRequested = false;
+            _vkNegotiation = nullptr;
+            _vkRenderCallback = {};
+            _readbackFailures = 0;
         }
     }
 }
 
+- (BOOL)startVulkanRenderer {
+    if (!_vkStart || !_vkGetInterface || !_vkReadback || !_vkShutdown || !_vkGameLoaded ||
+        !_vkNegotiation || !_vkRenderCallback.context_reset) return NO;
+    try {
+        if (!_vkStart(_vkNegotiation)) return NO;
+        _vkInterface = const_cast<void *>(_vkGetInterface());
+        if (!_vkInterface) return NO;
+        [self reportJITStage:@"MoltenVK device ready; initializing Vulkan PICA200"];
+        _vkRenderCallback.context_reset();
+        return _vkGameLoaded();
+    } catch (const std::exception& ex) {
+        [self reportJITStage:[NSString stringWithFormat:@"Vulkan initialization failed: %s", ex.what()]];
+    } catch (...) {
+        [self reportJITStage:@"Vulkan initialization raised an exception"];
+    }
+    return NO;
+}
+
+- (void)runLoadedGame {
+    auto nextFrame = std::chrono::steady_clock::now();
+    auto fpsWindow = nextFrame;
+    unsigned frameCount = 0;
+    auto performanceWindow = nextFrame;
+    unsigned emulatedFrames = 0;
+    _readbackAttempts = 0;
+    _readbackMilliseconds = 0;
+    double coreRunMilliseconds = 0.0;
+    uint64_t previousImages = 0;
+    bool firstFrame = true;
+    if (_jitEnabled) {
+        _waitingForFirstFrame.store(true);
+        [self scheduleFirstFrameCheckForSession:_playSession started:nextFrame previousSlices:0 initial:YES];
+    }
+    while (!_stopping.load()) {
+        const auto runStarted = std::chrono::steady_clock::now();
+        @autoreleasepool {
+            _runFrame();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (_stopping.load() || LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo) !=
+                                LibRetro::ReadbackRecovery::Continue) break;
+        ++frameCount;
+        const double coreRunMs =
+            std::chrono::duration<double, std::milli>(now - runStarted).count();
+        if (firstFrame && _receivedFirstVideo) {
+            firstFrame = false;
+            performanceWindow = now;
+            previousImages = _deliveredImages.load(std::memory_order_relaxed);
+            [self reportJITStage:@"7/7 First video frame received; measuring FPS"];
+        } else if (!firstFrame) {
+            ++emulatedFrames;
+            coreRunMilliseconds += coreRunMs;
+            const double seconds = std::chrono::duration<double>(now - performanceWindow).count();
+            if (seconds >= 5.0) {
+                const auto images = _deliveredImages.load(std::memory_order_relaxed);
+                [self writeDiagnostic:[NSString stringWithFormat:
+                    @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs; mean retro_run %.1f ms",
+                    emulatedFrames / seconds, (images - previousImages) / seconds, seconds,
+                    coreRunMilliseconds / emulatedFrames]];
+                if (_readbackAttempts) {
+                    [self writeDiagnostic:[NSString stringWithFormat:
+                        @"MoltenVK readback: %u copies, mean %.2f ms per copy",
+                        _readbackAttempts, _readbackMilliseconds / _readbackAttempts]];
+                }
+                _readbackAttempts = 0;
+                _readbackMilliseconds = 0;
+                performanceWindow = now;
+                emulatedFrames = 0;
+                coreRunMilliseconds = 0.0;
+                previousImages = images;
+            }
+        }
+        double elapsed = std::chrono::duration<double>(now - fpsWindow).count();
+        if (elapsed >= 1.0) {
+            if (_receivedFirstVideo) {
+                double fps = frameCount / elapsed;
+                BOOL usedJITCandidate = _jitEnabled;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.delegate azaharEmulatorDidMeasureFPS:fps
+                                                    jitActive:usedJITCandidate];
+                });
+            }
+            fpsWindow = now;
+            frameCount = 0;
+        }
+        nextFrame += std::chrono::milliseconds(16);
+        if (nextFrame < now) nextFrame = now;
+        std::this_thread::sleep_until(nextFrame);
+    }
+    _waitingForFirstFrame.store(false);
+}
+
 - (BOOL)handleEnvironment:(unsigned)command data:(void *)data {
     switch (command) {
+        case LibRetro::GetAcceptedVideoFrame:
+            if (!data) return NO;
+            *static_cast<bool *>(data) = _receivedFirstVideo;
+            return YES;
         case LibRetro::GetFrameStopCallback:
             if (!data) return NO;
             *static_cast<LibRetro::FrameStopCallback *>(data) = AzaharShouldStop;
@@ -619,7 +639,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             auto *variable = static_cast<retro_variable *>(data);
             if (!variable || !variable->key) return NO;
             NSString *key = [NSString stringWithUTF8String:variable->key];
-            NSString *value = key ? _gameOptions[key] : nil;
+            NSString *value = key ? self.launchOptions[key] : nil;
             variable->value = value.UTF8String;
             return value != nil;
         }
@@ -630,18 +650,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
             if (!data) return NO;
             *(retro_hw_context_type *)data =
-                [_gameOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"]
+                [self.launchOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"]
                     ? RETRO_HW_CONTEXT_VULKAN : RETRO_HW_CONTEXT_NONE;
             return YES;
         case RETRO_ENVIRONMENT_SET_HW_RENDER:
             if (!data) return NO;
             if (static_cast<retro_hw_render_callback *>(data)->context_type !=
                 RETRO_HW_CONTEXT_VULKAN) return NO;
-            if (![_gameOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"] ||
-                !_vkStart || !_vkReadback) return NO;
+            if (![self.launchOptions[@"citra_graphics_api"] isEqualToString:@"Vulkan"]) return NO;
             _vkRenderCallback = *static_cast<retro_hw_render_callback *>(data);
             _vkRequested = true;
-            return YES;
+            return _vkStart && _vkReadback;
         case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
             if (!data || !_vkRequested) return NO;
             // LibRetro passes the static negotiation struct directly as data.
@@ -698,29 +717,32 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
-    if (data == RETRO_HW_FRAME_BUFFER_VALID && _vkReadback && _vkInterface) {
+    if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
+        _frameQueued.exchange(true)) return;
+    const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
+    if (hardware) {
+        const auto started = std::chrono::steady_clock::now();
         const void *gpuPixels = nullptr;
-        size_t gpuPitch = 0;
-        if (!_vkReadback(width, height, &gpuPixels, &gpuPitch)) {
-            if (!_vkReadbackErrorReported) {
-                _vkReadbackErrorReported = true;
-                [self reportJITStage:@"JIT27TRACE MoltenVK image readback failed; select Software graphics"];
-            }
-            return;
-        }
-        data = gpuPixels;
-        pitch = gpuPitch;
+        bool copied = _vkReadback && _vkInterface && _vkReadback(width, height, &gpuPixels, &pitch);
+        ++_readbackAttempts;
+        _readbackMilliseconds += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        data = copied ? gpuPixels : nullptr;
     }
-    if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || width == 0 || height == 0 ||
-        width > 4096 || height > 4096 || pitch < width * 4 ||
-        pitch > (4096 * 4) || _frameQueued.exchange(true)) return;
+    if (!data || pitch < width * 4 || pitch > 4096 * 4) {
+        if (hardware && ++_readbackFailures == 1)
+            [self reportJITStage:@"MoltenVK image readback failed"];
+        _frameQueued.store(false);
+        return;
+    }
+    _readbackFailures = 0;
 
     if (!_receivedFirstVideo) {
         _receivedFirstVideo = YES;
         // A returned retro_run() alone does not prove a video buffer arrived.
         _waitingForFirstFrame.store(false);
         [self reportJITStage:[NSString stringWithFormat:
-            @"First %@ video buffer: %u x %u", _vkInterface ? @"MoltenVK" : @"software", width, height]];
+            @"First %@ video buffer: %u x %u", hardware ? @"MoltenVK" : @"software", width, height]];
     }
     NSData *pixels = [NSData dataWithBytes:data length:pitch * height];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -735,7 +757,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (delegate && !_stopping.load()) {
                 [delegate azaharEmulatorDidRenderImage:image];
                 if (_deliveredImages.fetch_add(1, std::memory_order_relaxed) == 0) {
-                    [self reportJITStage:@"First software image delivered to the game view"];
+                    [self reportJITStage:hardware ? @"First MoltenVK image delivered to the game view"
+                                                  : @"First software image delivered to the game view"];
                 }
             }
             CGImageRelease(frame);

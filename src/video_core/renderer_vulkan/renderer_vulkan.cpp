@@ -239,11 +239,20 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
     if (!Settings::values.use_skip_duplicate_frames.GetValue() ||
         Core::PerfStats::game_frames_updated) {
         Frame* frame = window.GetRenderFrame();
+        if (!frame) {
+            return;
+        }
 
         if (layout.width != frame->width || layout.height != frame->height) {
             window.WaitPresent();
             scheduler.Finish();
             window.RecreateFrame(frame, layout.width, layout.height);
+#ifdef HAVE_LIBRETRO
+            frame = window.GetRenderFrame();
+            if (!frame) {
+                return;
+            }
+#endif
         }
 
         clear_color.float32[0] = Settings::values.bg_red.GetValue();
@@ -253,6 +262,10 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
 
         DrawScreens(frame, layout, flipped);
         scheduler.Flush(frame->render_ready);
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+        // Readback is submitted on the same queue immediately after Present.
+        scheduler.WaitWorker();
+#endif
         window.Present(frame);
         if ((secondaryWindowEnabled && isSecondaryWindow) || (!secondaryWindowEnabled)) {
             Core::PerfStats::game_frames_updated = false;

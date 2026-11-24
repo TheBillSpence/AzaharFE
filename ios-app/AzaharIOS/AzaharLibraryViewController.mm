@@ -229,8 +229,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     BOOL requested = self.host.experimentalJITEnabled;
     NSString *mode = jitActive ? @"JIT27 universal prepared" :
                      (requested ? @"JIT unavailable (interpreter)" : @"Interpreter");
-    self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | Software graphics",
-                        fps, mode];
+    self.status.text = [NSString stringWithFormat:@"%.1f FPS | %@ | %@ graphics",
+                        fps, mode, self.host.launchOptions[@"citra_graphics_api"] ?: @"Software"];
 }
 
 - (void)azaharEmulatorDidFail:(NSString *)message {

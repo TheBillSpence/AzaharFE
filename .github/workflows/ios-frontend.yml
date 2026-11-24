@@ -5,6 +5,12 @@ on:
   push:
     branches: [ios-jit-experiment]
     paths:
+      - 'CMakeLists.txt'
+      - 'src/audio_core/**'
+      - 'src/video_core/**'
+      - 'src/core/core.cpp'
+      - 'externals/vulkan-headers'
+      - 'externals/libretro-common'
       - 'ios-app/**'
       - 'src/citra_libretro/**'
       - 'src/core/arm/dynarmic/**'
@@ -32,14 +38,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch pinned submodules
-        env:
-          GIT_HTTP_LOW_SPEED_LIMIT: '1024'
-          GIT_HTTP_LOW_SPEED_TIME: '120'
-          GIT_TERMINAL_PROMPT: '0'
-        run: |
-          git -c 'url.https://github.com/.insteadOf=git@github.com:' \
-            submodule update --init --recursive --depth 1 --jobs 4
+      - name: Fetch headers for the iPhone application shell
+        run: git submodule update --init --depth 1 externals/libretro-common
 
       - name: Install build tools
         run: brew install ninja xcodegen
@@ -80,6 +80,15 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$app/Info.plist"
           echo "Azahar iOS experimental build ${GITHUB_RUN_NUMBER}"
           /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$app/Info.plist"
+
+      - name: Fetch pinned submodules
+        env:
+          GIT_HTTP_LOW_SPEED_LIMIT: '1024'
+          GIT_HTTP_LOW_SPEED_TIME: '120'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git -c 'url.https://github.com/.insteadOf=git@github.com:' \
+            submodule update --init --recursive --depth 1 --jobs 4
 
       - name: Patch LibreSSL syslog for iOS
         run: |

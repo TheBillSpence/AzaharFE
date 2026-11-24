@@ -35,7 +35,9 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"citra_layout_option"]) return @[@"default", @"single_screen", @"large_screen", @"side_by_side"];
     return @[@"Top", @"Bottom"];
 }
-NSString *AZChoiceTitle(NSString *v) {
+NSString *AZChoiceTitle(NSString *key, NSString *v) {
+    if ([key isEqual:@"AzaharSoftwareThreads"] && ![v isEqual:@"auto"])
+        return [NSString stringWithFormat:@"%@ threads", v];
     return @{@"on":@"On", @"off":@"Off",
              @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
              @"fast":@"Fast dispatch (default)", @"turbo":@"Turbo JIT (experimental)",

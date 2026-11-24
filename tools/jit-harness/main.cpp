@@ -431,19 +431,12 @@ void TestStepRunTransition() {
 }
 
 
-void TestOptimizationMode(const std::string& mode) {
-    Require(mode == "linked" || mode == "fast" || mode == "turbo" || mode == "direct",
-            "unknown speed preset");
-    Environment env;
-    WriteActiveLoop(env.memory);
-    ReferenceCPU reference;
-    reference.memory = env.memory;
-    reference.Init();
+using PageTable = std::unique_ptr<std::array<u8*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>>;
 
+auto ModeConfig(Environment& env, const std::string& mode, PageTable& pages) {
     auto config = ConservativeConfig(env);
     config.optimizations = Core::SelectIOSJitOptimizations(
         Dynarmic::A32::UserConfig{}.optimizations, mode);
-    std::unique_ptr<std::array<u8*, Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>> pages;
     if (mode == "turbo" || mode == "direct")
         config.code_cache_size = 32 * 1024 * 1024;
     if (mode == "direct") {
@@ -454,6 +447,20 @@ void TestOptimizationMode(const std::string& mode) {
             env.memory.bytes.data() + kData;
         config.page_table = pages.get();
     }
+    return config;
+}
+
+void TestOptimizationMode(const std::string& mode) {
+    Require(mode == "linked" || mode == "fast" || mode == "turbo" || mode == "direct",
+            "unknown speed preset");
+    Environment env;
+    WriteActiveLoop(env.memory);
+    ReferenceCPU reference;
+    reference.memory = env.memory;
+    reference.Init();
+
+    PageTable pages;
+    auto config = ModeConfig(env, mode, pages);
     Dynarmic::A32::Jit cpu(config);
     InitCPU(cpu);
 
@@ -477,10 +484,11 @@ void TestOptimizationMode(const std::string& mode) {
     std::cout << "PASS " << mode << " optimized Run/Step state and budgets\n";
 }
 
-void TestExclusive() {
+void TestExclusive(const std::string& mode) {
     Environment env;
     Dynarmic::ExclusiveMonitor monitor(2);
-    auto config = ConservativeConfig(env);
+    PageTable pages;
+    auto config = ModeConfig(env, mode, pages);
     config.global_monitor = &monitor;
     config.processor_id = 0;
     Dynarmic::A32::Jit cpu(config);
@@ -593,7 +601,8 @@ int main(int argc, char** argv) {
         else if (name == "step_run") TestStepRunTransition();
         else if (name == "svc_chain") TestSVCChain();
         else if (name == "invalidate_stress") TestInvalidateStress();
-        else if (name == "exclusive") TestExclusive();
+        else if (name == "exclusive") TestExclusive("safe");
+        else if (name.starts_with("exclusive-")) TestExclusive(name.substr(10));
         else if (name == "opt_linked") TestOptimizationMode("linked");
         else if (name == "opt_fast") TestOptimizationMode("fast");
         else if (name == "opt_turbo") TestOptimizationMode("turbo");

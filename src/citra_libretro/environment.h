@@ -86,7 +86,7 @@ bool SetHWRenderer(retro_hw_render_callback* cb);
 bool GetHWRenderInterface(void** interface);
 
 /// Sets the H/W rendering context negotiation interface.
-bool SetHWRenderContextNegotiationInterface(void** interface);
+bool SetHWRenderContextNegotiationInterface(const void* interface);
 
 /// Sets the async audio callback.
 bool SetAudioCallback(retro_audio_callback* cb);

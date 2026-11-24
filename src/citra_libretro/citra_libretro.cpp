@@ -57,6 +57,10 @@
 #include "core/loader/loader.h"
 #include "core/memory.h"
 
+#if defined(IOS) && defined(ENABLE_VULKAN)
+#include "citra_libretro/ios_moltenvk_bridge.h"
+#endif
+
 // Experimental AzaharFE safe-exit bridge, independently implemented.
 #ifdef IOS
 namespace Core {
@@ -130,6 +134,7 @@ void retro_deinit() {
     LibRetro::Input::Shutdown();
 
     delete emu_instance;
+    emu_instance = nullptr;
 
     Common::Log::Stop();
 }
@@ -735,7 +740,7 @@ bool retro_load_game(const struct retro_game_info* info) {
             LibRetro::CreateVulkanDevice,
             nullptr, // destroy_device - not needed (frontend owns the device)
         };
-        LibRetro::SetHWRenderContextNegotiationInterface((void**)&vk_negotiation);
+        LibRetro::SetHWRenderContextNegotiationInterface(&vk_negotiation);
 #endif
         break;
     }

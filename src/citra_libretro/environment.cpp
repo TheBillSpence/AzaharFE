@@ -12,6 +12,9 @@
 #include "core_settings.h"
 #include "emu_window/libretro_window.h"
 #include "environment.h"
+#ifdef IOS
+#include "citra_libretro/ios_frame_control.h"
+#endif
 
 #ifdef HAVE_LIBRETRO_VFS
 #include "streams/file_stream.h"
@@ -49,10 +52,12 @@ bool GetSoftwareFramebuffer(retro_framebuffer* fb, int width, int height) {
 void UploadVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch) {
     video_cb(data, width, height, pitch);
 #ifdef IOS
-    // The on-device CPU-only benchmark may start after the first GPU frame,
-    // not just the software-rendered frames used by earlier iOS builds.
-    if (data && width && height && (pitch || data == RETRO_HW_FRAME_BUFFER_VALID)) {
-        submitted_software_frame.store(true, std::memory_order_relaxed);
+    if (!submitted_software_frame.load(std::memory_order_relaxed) && data && width && height &&
+        (pitch || data == RETRO_HW_FRAME_BUFFER_VALID)) {
+        bool accepted = false;
+        if (!environ_cb(GetAcceptedVideoFrame, &accepted) || accepted) {
+            submitted_software_frame.store(true, std::memory_order_relaxed);
+        }
     }
 #endif
 }
@@ -161,9 +166,9 @@ bool GetHWRenderInterface(void** interface) {
     return environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, interface) && !!*interface;
 }
 
-bool SetHWRenderContextNegotiationInterface(void** interface) {
-    return environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, interface) &&
-           !!*interface;
+bool SetHWRenderContextNegotiationInterface(const void* interface) {
+    return interface && environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE,
+                                   const_cast<void*>(interface));
 }
 
 bool SetAudioCallback(retro_audio_callback* cb) {

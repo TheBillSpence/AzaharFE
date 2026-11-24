@@ -24,6 +24,13 @@ struct Context {
     VkQueue queue = VK_NULL_HANDLE;
     std::uint32_t queue_family = 0;
     VkCommandPool command_pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence copied = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize capacity = 0;
+    bool coherent = false;
+    bool device_failed = false;
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat image_format = VK_FORMAT_UNDEFINED;
@@ -115,21 +122,37 @@ bool CreateStagingBuffer(VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& me
     return vkBindBufferMemory(state.device, buffer, memory, 0) == VK_SUCCESS;
 }
 
-bool CopyOutput(VkBuffer buffer, unsigned width, unsigned height) {
-    VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocate.commandPool = state.command_pool;
-    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocate.commandBufferCount = 1;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    if (vkAllocateCommandBuffers(state.device, &allocate, &command) != VK_SUCCESS)
-        return false;
+void ReleaseStagingBuffer() {
+    vkDestroyBuffer(state.device, state.buffer, nullptr);
+    vkFreeMemory(state.device, state.memory, nullptr);
+    state.buffer = VK_NULL_HANDLE;
+    state.memory = VK_NULL_HANDLE;
+    state.capacity = 0;
+}
 
+bool EnsureStagingBuffer(VkDeviceSize size) {
+    if (state.capacity >= size)
+        return true;
+    ReleaseStagingBuffer();
+    if (!CreateStagingBuffer(size, state.buffer, state.memory, state.coherent)) {
+        ReleaseStagingBuffer();
+        return false;
+    }
+    state.capacity = size;
+    return true;
+}
+
+bool CopyOutput(unsigned width, unsigned height) {
+    const auto command = state.command;
+    if (vkResetCommandBuffer(command, 0) != VK_SUCCESS ||
+        vkResetFences(state.device, 1, &state.copied) != VK_SUCCESS)
+        return false;
     bool result = false;
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(command, &begin) == VK_SUCCESS) {
         VkImageMemoryBarrier before{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        before.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         before.oldLayout = state.image_layout;
         before.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -146,28 +169,40 @@ bool CopyOutput(VkBuffer buffer, unsigned width, unsigned height) {
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy.imageSubresource.layerCount = 1;
         copy.imageExtent = {width, height, 1};
-        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer,
+        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.buffer,
                                1, &copy);
 
+        VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.buffer = state.buffer;
+        host.size = VK_WHOLE_SIZE;
         VkImageMemoryBarrier after = before;
         after.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        after.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        after.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         after.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         after.newLayout = state.image_layout;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                             &after);
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                             0, nullptr, 1, &host, 1, &after);
 
         if (vkEndCommandBuffer(command) == VK_SUCCESS) {
             VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submit.commandBufferCount = 1;
             submit.pCommandBuffers = &command;
-            std::lock_guard lock{state.queue_mutex};
-            if (vkQueueSubmit(state.queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS)
-                result = vkQueueWaitIdle(state.queue) == VK_SUCCESS;
+            {
+                std::lock_guard lock{state.queue_mutex};
+                if (vkQueueSubmit(state.queue, 1, &submit, state.copied) != VK_SUCCESS) {
+                    state.device_failed = true;
+                    return false;
+                }
+            }
+            result = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+            state.device_failed = !result;
         }
     }
-    vkFreeCommandBuffers(state.device, state.command_pool, 1, &command);
     return result;
 }
 } // namespace
@@ -228,6 +263,17 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
         return false;
     }
 
+    VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = state.command_pool;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkAllocateCommandBuffers(state.device, &alloc, &state.command) != VK_SUCCESS ||
+        vkCreateFence(state.device, &fence, nullptr, &state.copied) != VK_SUCCESS) {
+        azahar_ios_vk_shutdown();
+        return false;
+    }
+
     auto& intf = state.interface;
     intf.interface_type = RETRO_HW_RENDER_INTERFACE_VULKAN;
     intf.interface_version = RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION;
@@ -261,30 +307,20 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const vo
         return false;
 
     const auto byte_count = static_cast<VkDeviceSize>(width) * height * 4;
-    // PresentWindow does not submit external semaphores. Its Vulkan queues
-    // must finish before reading the final output image.
-    if (vkDeviceWaitIdle(state.device) != VK_SUCCESS)
-        return false;
-
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    bool coherent = false;
-    bool okay = CreateStagingBuffer(byte_count, buffer, memory, coherent);
-    if (okay)
-        okay = CopyOutput(buffer, width, height);
+    bool okay = !state.device_failed && EnsureStagingBuffer(byte_count) && CopyOutput(width, height);
     if (okay) {
+        state.pixels.resize(static_cast<std::size_t>(byte_count));
         void* mapped = nullptr;
-        okay = vkMapMemory(state.device, memory, 0, byte_count, 0, &mapped) == VK_SUCCESS;
+        okay = vkMapMemory(state.device, state.memory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
         if (okay) {
-            if (!coherent) {
+            if (!state.coherent) {
                 VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-                range.memory = memory;
+                range.memory = state.memory;
                 range.offset = 0;
                 range.size = VK_WHOLE_SIZE;
                 okay = vkInvalidateMappedMemoryRanges(state.device, 1, &range) == VK_SUCCESS;
             }
             if (okay) {
-                state.pixels.resize(static_cast<std::size_t>(byte_count));
                 std::memcpy(state.pixels.data(), mapped, state.pixels.size());
                 // UIImage's existing XRGB8888 path consumes little-endian
                 // BGRA bytes. Azahar Vulkan outputs RGBA8, so swap R and B.
@@ -295,25 +331,27 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const vo
                 *pixels = state.pixels.data();
                 *pitch = static_cast<std::size_t>(width) * 4;
             }
-            vkUnmapMemory(state.device, memory);
+            vkUnmapMemory(state.device, state.memory);
         }
     }
-    if (buffer)
-        vkDestroyBuffer(state.device, buffer, nullptr);
-    if (memory)
-        vkFreeMemory(state.device, memory, nullptr);
     return okay;
 }
 
 extern "C" void azahar_ios_vk_shutdown() {
     if (state.device) {
+        std::lock_guard lock{state.queue_mutex};
         vkDeviceWaitIdle(state.device);
+        ReleaseStagingBuffer();
+        vkDestroyFence(state.device, state.copied, nullptr);
         if (state.command_pool)
             vkDestroyCommandPool(state.device, state.command_pool, nullptr);
         vkDestroyDevice(state.device, nullptr);
     }
     if (state.instance)
         vkDestroyInstance(state.instance, nullptr);
+    state.command = VK_NULL_HANDLE;
+    state.copied = VK_NULL_HANDLE;
+    state.device_failed = false;
     state.command_pool = VK_NULL_HANDLE;
     state.device = VK_NULL_HANDLE;
     state.instance = VK_NULL_HANDLE;

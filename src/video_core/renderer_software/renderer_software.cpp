@@ -12,6 +12,13 @@
 #include "video_core/renderer_software/renderer_software.h"
 
 namespace SwRenderer {
+namespace {
+constexpr std::size_t MirroredPixel(std::size_t x, std::size_t y, std::size_t stride) {
+    return y * stride + (stride - 1 - x);
+}
+static_assert(MirroredPixel(0, 0, 3) == 2 && MirroredPixel(2, 0, 3) == 0);
+static_assert(MirroredPixel(0, 1, 3) == 5 && MirroredPixel(2, 1, 3) == 3);
+} // namespace
 
 RendererSoftware::RendererSoftware(Core::System& system, Pica::PicaCore& pica_,
                                    Frontend::EmuWindow& window)
@@ -66,13 +73,13 @@ void RendererSoftware::LoadFBToScreenInfo(int i, const Pica::ColorFill& color_fi
 
     for (u32 y = 0; y < info.height; y++) {
         for (u32 x = 0; x < info.width; x++) {
-            const u8* pixel = framebuffer_data + (y * pixel_stride + pixel_stride - x) * bpp;
             Common::Vec4 color = [&] {
                 if (color_fill.is_enabled) {
                     return Common::Vec4<u8>(color_fill.color_r, color_fill.color_g,
                                             color_fill.color_b, 255);
                 }
 
+                const u8* pixel = framebuffer_data + MirroredPixel(x, y, pixel_stride) * bpp;
                 switch (framebuffer.color_format) {
                 case Pica::PixelFormat::RGBA8:
                     return Common::Color::DecodeRGBA8(pixel);

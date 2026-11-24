@@ -104,10 +104,10 @@
     } else {
         NSString *key=AZOptionKeys()[ip.row];
         content.text=AZOptionTitle(key);
-        NSString *value=AZChoiceTitle(AZValue(key,self.perGame ? self.game : nil));
+        NSString *value=AZChoiceTitle(key, AZValue(key,self.perGame ? self.game : nil));
         NSString *origin=self.perGame && AZHasOverride(key,self.game) ? @"Game override" : @"Universal";
         if (self.sessionOptions) {
-            content.secondaryText=AZChoiceTitle(self.sessionOptions[key]);
+            content.secondaryText=AZChoiceTitle(key, self.sessionOptions[key]);
         } else content.secondaryText=self.perGame ? [NSString stringWithFormat:@"%@  ·  %@",value,origin] : value;
     }
     cell.contentConfiguration=content;
@@ -157,7 +157,7 @@
         AZSetValue(key,nil,url); [tableView reloadData];
     }]];
     for (NSString *value in AZChoices(key)) {
-        [menu addAction:[UIAlertAction actionWithTitle:AZChoiceTitle(value) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [menu addAction:[UIAlertAction actionWithTitle:AZChoiceTitle(key, value) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
             AZSetValue(key,value,url); [tableView reloadData];
         }]];
     }

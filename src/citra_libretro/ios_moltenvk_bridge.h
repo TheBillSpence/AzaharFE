@@ -2,7 +2,6 @@
 // Licensed under GPLv3 or any later version.
 #pragma once
 
-#if defined(IOS) && defined(ENABLE_VULKAN)
 #include <cstddef>
 
 // The Objective-C++ iPhone frontend consumes only this small C ABI. All
@@ -14,5 +13,5 @@ __attribute__((visibility("default"))) bool azahar_ios_vk_readback(unsigned widt
                                                                    const void** pixels,
                                                                    std::size_t* pitch);
 __attribute__((visibility("default"))) void azahar_ios_vk_shutdown();
+__attribute__((visibility("default"))) bool azahar_ios_vk_game_loaded();
 }
-#endif

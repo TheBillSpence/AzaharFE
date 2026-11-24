@@ -846,12 +846,16 @@ std::string RunIOSJitMicrobenchmark(std::string_view mode) {
 
         // Compile the loop before timing. Run through the same safe-exit
         // registry as gameplay, in case the user stops during the benchmark.
-        callbacks.ticks_left = 4096;
-        {
+        const auto run_pass = [&](std::uint64_t budget) {
+            const auto before = callbacks.charged;
+            const auto r0 = cpu.Regs()[0];
+            callbacks.ticks_left = budget;
             AzaharScopedJITRun active_jit{&cpu};
             cpu.Run();
-        }
-        if (callbacks.unexpected_fault || callbacks.charged < 4096)
+            return !callbacks.unexpected_fault && callbacks.charged - before == budget &&
+                   cpu.Regs()[0] - r0 == budget / 2 && cpu.Regs()[15] == 0x1000;
+        };
+        if (!run_pass(4096))
             return "PERF27 JIT benchmark failed warmup correctness test";
 
         constexpr unsigned kPasses = 8;
@@ -859,11 +863,8 @@ std::string RunIOSJitMicrobenchmark(std::string_view mode) {
         const auto before_ticks = callbacks.charged;
         const auto started = std::chrono::steady_clock::now();
         for (unsigned pass = 0; pass < kPasses; ++pass) {
-            callbacks.ticks_left = kBudget;
-            AzaharScopedJITRun active_jit{&cpu};
-            cpu.Run();
-            if (callbacks.unexpected_fault)
-                return "PERF27 JIT benchmark raised an unexpected fault";
+            if (!run_pass(kBudget))
+                return "PERF27 JIT benchmark failed guest state or cycle check";
         }
         const auto finished = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration<double>(finished - started).count();

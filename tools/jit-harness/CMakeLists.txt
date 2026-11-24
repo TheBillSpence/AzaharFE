@@ -15,7 +15,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../externals/dynarmic"
 add_executable(azahar_jit_harness main.cpp)
 target_compile_features(azahar_jit_harness PRIVATE cxx_std_20)
 target_link_libraries(azahar_jit_harness PRIVATE dynarmic)
-foreach(test_case parity budget svc invalidate parity_long budget_stress step_run svc_chain invalidate_stress exclusive opt_linked opt_fast opt_turbo opt_direct microbench)
+foreach(test_case parity budget svc invalidate parity_long budget_stress step_run svc_chain invalidate_stress exclusive exclusive-linked exclusive-fast exclusive-turbo exclusive-direct opt_linked opt_fast opt_turbo opt_direct microbench)
     add_test(NAME "azahar_jit_${test_case}" COMMAND azahar_jit_harness ${test_case})
     set_tests_properties("azahar_jit_${test_case}" PROPERTIES TIMEOUT 20)
 endforeach()

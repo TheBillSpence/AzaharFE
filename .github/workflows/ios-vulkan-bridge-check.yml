@@ -4,7 +4,12 @@ on:
   push:
     branches: [ios-jit-experiment]
     paths:
-      - 'src/citra_libretro/ios_moltenvk_bridge.*'
+      - 'src/citra_libretro/**'
+      - 'src/video_core/renderer_vulkan/**'
+      - 'ios-app/AzaharIOS/AzaharEmulator.mm'
+      - 'externals/vulkan-headers'
+      - 'externals/libretro-common'
+      - 'tools/ios-video-tests/**'
       - '.github/workflows/ios-vulkan-bridge-check.yml'
 
 concurrency:
@@ -27,18 +32,17 @@ jobs:
         run: |
           set -euo pipefail
           git submodule update --init --depth 1 externals/vulkan-headers externals/libretro-common
-      - name: Validate bridge with native Clang
+      - name: Install headless Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers
+      - name: Compile and exercise Vulkan readback
+        shell: bash
         run: |
           set -euo pipefail
-          clang++ -std=c++20 -DIOS=1 -DENABLE_VULKAN=1 -fsyntax-only \
-            -Isrc \
+          clang++ -std=c++20 -DIOS=1 -DENABLE_VULKAN=1 -Isrc \
             -Iexternals/vulkan-headers/include \
             -Iexternals/libretro-common/libretro-common/include \
-            src/citra_libretro/ios_moltenvk_bridge.cpp
-      - name: Check declared entry points
-        run: |
-          set -euo pipefail
-          for symbol in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_shutdown; do
-            grep -q "$symbol" src/citra_libretro/ios_moltenvk_bridge.h
-            grep -q "$symbol" src/citra_libretro/ios_moltenvk_bridge.cpp
-          done
+            src/citra_libretro/ios_moltenvk_bridge.cpp tools/ios-video-tests/readback.cpp \
+            -lvulkan -pthread -o "$RUNNER_TEMP/check-readback"
+          drivers=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          test -f "${drivers[0]}"
+          VK_DRIVER_FILES="${drivers[0]}" timeout 60 "$RUNNER_TEMP/check-readback"

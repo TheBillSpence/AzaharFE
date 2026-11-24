@@ -3,6 +3,8 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include <algorithm>
+#include <cstring>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -20,6 +22,8 @@
 #include <vk_mem_alloc.h>
 
 static const struct retro_hw_render_interface_vulkan* vulkan_intf;
+static VkDevice negotiated_device = VK_NULL_HANDLE;
+static std::vector<std::string> negotiated_extensions;
 
 namespace LibRetro {
 
@@ -90,53 +94,45 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     }
 
     // Add extensions we want (if available)
-    AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (surface)
+        AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
     AddExtensionIfAvailable(enabled_exts, available_exts,
                             VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     AddExtensionIfAvailable(enabled_exts, available_exts,
                             VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     AddExtensionIfAvailable(enabled_exts, available_exts, VK_EXT_TOOLING_INFO_EXTENSION_NAME);
-    AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+    const bool portable = AddExtensionIfAvailable(enabled_exts, available_exts,
+                                                  VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     const bool has_custom_border_color = AddExtensionIfAvailable(
         enabled_exts, available_exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
 
-    // These are beneficial but blacklisted on some platforms due to driver bugs
-    // For now, let the Instance class handle these decisions
-    // AddExtensionIfAvailable(enabled_exts, available_exts,
-    // VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-    // AddExtensionIfAvailable(enabled_exts, available_exts,
-    // VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
-
-    // Merge frontend's required features with our baseline
-    VkPhysicalDeviceFeatures merged_features{};
+    auto get_features = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        get_instance_proc_addr(instance, "vkGetPhysicalDeviceFeatures2"));
+    if (!get_features)
+        return false;
+    VkPhysicalDeviceFeatures2 enabled_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDevicePortabilitySubsetFeaturesKHR portability{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR};
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT border{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+    if (portable)
+        enabled_features.pNext = &portability;
+    if (has_custom_border_color) {
+        border.pNext = enabled_features.pNext;
+        enabled_features.pNext = &border;
+    }
+    get_features(gpu, &enabled_features);
     if (required_features) {
-        // Copy all frontend requirements
-        for (unsigned i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
-            if (reinterpret_cast<const VkBool32*>(required_features)[i]) {
-                reinterpret_cast<VkBool32*>(&merged_features)[i] = VK_TRUE;
-            }
+        VkBool32 required[sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32)];
+        VkBool32 supported[sizeof(required) / sizeof(VkBool32)];
+        std::memcpy(required, required_features, sizeof(required));
+        std::memcpy(supported, &enabled_features.features, sizeof(supported));
+        for (std::size_t i = 0; i < std::size(required); ++i) {
+            if (required[i] && !supported[i])
+                return false;
         }
     }
-
-    // Query actual device features so we only request what's supported
-    PFN_vkGetPhysicalDeviceFeatures vkGetPhysicalDeviceFeatures =
-        (PFN_vkGetPhysicalDeviceFeatures)get_instance_proc_addr(instance,
-                                                                "vkGetPhysicalDeviceFeatures");
-    VkPhysicalDeviceFeatures device_features{};
-    vkGetPhysicalDeviceFeatures(gpu, &device_features);
-
-    // Request features we want, gated by actual device support
-    if (device_features.geometryShader)
-        merged_features.geometryShader = VK_TRUE;
-    if (device_features.logicOp)
-        merged_features.logicOp = VK_TRUE;
-    if (device_features.samplerAnisotropy)
-        merged_features.samplerAnisotropy = VK_TRUE;
-    if (device_features.fragmentStoresAndAtomics)
-        merged_features.fragmentStoresAndAtomics = VK_TRUE;
-    if (device_features.shaderClipDistance)
-        merged_features.shaderClipDistance = VK_TRUE;
 
     // Find queue family with graphics support
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties =
@@ -168,18 +164,6 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &queue_priority;
 
-    VkPhysicalDeviceFeatures2 enabled_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    enabled_features.features = merged_features;
-
-    VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color_features{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
-    if (has_custom_border_color) {
-        custom_border_color_features.customBorderColors = VK_TRUE;
-        custom_border_color_features.customBorderColorWithoutFormat = VK_TRUE;
-        custom_border_color_features.pNext = enabled_features.pNext;
-        enabled_features.pNext = &custom_border_color_features;
-    }
-
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
@@ -198,6 +182,22 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
         LOG_CRITICAL(Render_Vulkan, "vkCreateDevice failed: {}", static_cast<int>(result));
         return false;
     }
+
+    // Only advertise optional features whose structures were supplied at device creation.
+    negotiated_extensions.clear();
+    for (const char* name : enabled_exts) {
+        if (!strcmp(name, VK_KHR_SWAPCHAIN_EXTENSION_NAME) ||
+            !strcmp(name, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME) ||
+            !strcmp(name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) ||
+            !strcmp(name, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) ||
+            !strcmp(name, VK_EXT_TOOLING_INFO_EXTENSION_NAME) ||
+            !strcmp(name, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) ||
+            (!strcmp(name, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) &&
+             border.customBorderColors && border.customBorderColorWithoutFormat)) {
+            negotiated_extensions.emplace_back(name);
+        }
+    }
+    negotiated_device = device;
 
     // Get the queue
     PFN_vkGetDeviceQueue vkGetDeviceQueue =
@@ -283,10 +283,12 @@ LibRetroVKInstance::LibRetroVKInstance(Frontend::EmuWindow& window,
     // Get device properties and features
     properties = physical_device.getProperties();
 
-    const std::vector extensions = physical_device.enumerateDeviceExtensionProperties();
-    available_extensions.reserve(extensions.size());
-    for (const auto& extension : extensions) {
-        available_extensions.emplace_back(extension.extensionName.data());
+    if (negotiated_device == vulkan_intf->device) {
+        available_extensions = negotiated_extensions;
+    } else {
+        for (const auto& extension : physical_device.enumerateDeviceExtensionProperties()) {
+            available_extensions.emplace_back(extension.extensionName.data());
+        }
     }
 
     // Get queues from LibRetro
@@ -304,6 +306,10 @@ LibRetroVKInstance::LibRetroVKInstance(Frontend::EmuWindow& window,
 
     // Now run device capability detection with dispatcher initialized
     CreateDevice();
+    if (negotiated_device == vulkan_intf->device) {
+        // The negotiated Vulkan 1.1 device does not enable shaderOutputLayer.
+        layered_rendering_supported = false;
+    }
 
     // LibRetro-specific: Validate function pointers are actually available
     // LibRetro's device may not have loaded all extension functions even if extensions are
@@ -603,6 +609,9 @@ void PresentWindow::DestroyFrameResources() {
     const vk::Device device = instance.GetDevice();
 
     for (auto& frame : frame_pool) {
+        if (frame.cmdbuf) {
+            device.freeCommandBuffers(command_pool, frame.cmdbuf);
+        }
         if (frame.framebuffer) {
             device.destroyFramebuffer(frame.framebuffer);
         }
@@ -677,6 +686,7 @@ void PresentWindow::RecreateFrame(Frame* frame, u32 width, u32 height) {
     [[maybe_unused]] const vk::Result wait_result =
         device.waitForFences(frame->present_done, VK_TRUE, UINT64_MAX);
 
+    DestroyFrameResources();
     // Recreate output texture with new dimensions
     CreateOutputTexture(width, height);
 
@@ -759,8 +769,9 @@ MasterSemaphoreLibRetro::MasterSemaphoreLibRetro(const Instance& instance_) : in
 }
 
 MasterSemaphoreLibRetro::~MasterSemaphoreLibRetro() {
-    // wait_thread will be automatically stopped by jthread destructor
-    // Clean up remaining fences
+    wait_thread.request_stop();
+    wait_cv.notify_all();
+    wait_thread.join();
     const vk::Device device{instance.GetDevice()};
     for (const auto& fence : free_queue) {
         device.destroyFence(fence);
@@ -833,7 +844,7 @@ void MasterSemaphoreLibRetro::SubmitWork(vk::CommandBuffer cmdbuf, vk::Semaphore
 void MasterSemaphoreLibRetro::WaitThread(std::stop_token token) {
     const vk::Device device{instance.GetDevice()};
 
-    while (!token.stop_requested()) {
+    for (;;) {
         vk::Fence fence;
         u64 signal_value;
 
@@ -841,7 +852,7 @@ void MasterSemaphoreLibRetro::WaitThread(std::stop_token token) {
         {
             std::unique_lock lock{wait_mutex};
             Common::CondvarWait(wait_cv, lock, token, [this] { return !wait_queue.empty(); });
-            if (token.stop_requested()) {
+            if (wait_queue.empty()) {
                 return;
             }
             std::tie(fence, signal_value) = wait_queue.front();

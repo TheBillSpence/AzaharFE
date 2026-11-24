@@ -465,7 +465,14 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     if (Settings::values.is_new_3ds) {
         num_cores = 4;
     }
-    ResultStatus init_result{Init(emu_window, secondary_window, system_mem_mode, num_cores)};
+    ResultStatus init_result;
+    try {
+        init_result = Init(emu_window, secondary_window, system_mem_mode, num_cores);
+    } catch (...) {
+        // Renderer construction can throw after CPUs and services are installed.
+        Shutdown();
+        throw;
+    }
     if (init_result != ResultStatus::Success) {
         LOG_CRITICAL(Core, "Failed to initialize system (Error {})!",
                      static_cast<u32>(init_result));
@@ -830,6 +837,7 @@ void System::Shutdown(bool is_deserializing) {
     service_manager.reset();
     dsp_core.reset();
     kernel.reset();
+    running_core = nullptr;
     cpu_cores.clear();
     exclusive_monitor.reset();
     timing.reset();
