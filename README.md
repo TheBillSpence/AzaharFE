@@ -15,11 +15,11 @@ The project continues the legacy of **Citra** and is actively developed by a com
 
 # Installation
 
-### Windows
+### iOS
 
 Azahar is available as a .IPA file.
 
-Download the latest release in your preferred format from the [Releases](https://github.com/azahar-emu/azahar/releases) page.
+Download the latest release in your preferred format from the [Releases](https://github.com/TheBillSpence/AzaharFE/releases/tag/v1.0.0) page.
 
 android builds are in development.
 
