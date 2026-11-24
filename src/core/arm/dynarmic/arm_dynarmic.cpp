@@ -121,7 +121,19 @@ public:
             LibRetro::DisplayMessage(message);
         }
 #endif
-        return memory.Read32OrNullopt(vaddr);
+        const auto instruction = memory.Read32OrNullopt(vaddr);
+#ifdef IOS
+        if (instruction_reports < 16) {
+            ++instruction_reports;
+            char message[144];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE translate core=%u pc=0x%08x opcode=0x%08x valid=%u",
+                          parent.GetID(), vaddr, instruction.value_or(0),
+                          static_cast<unsigned>(instruction.has_value()));
+            LibRetro::DisplayMessage(message);
+        }
+#endif
+        return instruction;
     }
 
     std::uint8_t MemoryRead8(VAddr vaddr) override {
@@ -189,7 +201,25 @@ public:
         return memory.WriteExclusive16(vaddr, value, expected);
     }
     bool MemoryWriteExclusive32(u32 vaddr, u32 value, u32 expected) override {
-        return memory.WriteExclusive32(vaddr, value, expected);
+#ifdef IOS
+        const bool trace = exclusive_reports < 8;
+        if (trace) {
+            ++exclusive_reports;
+            char message[128];
+            std::snprintf(message, sizeof(message),
+                          "JIT27TRACE STREX callback core=%u addr=0x%08x entered", parent.GetID(),
+                          vaddr);
+            LibRetro::DisplayMessage(message);
+        }
+#endif
+        const bool result = memory.WriteExclusive32(vaddr, value, expected);
+#ifdef IOS
+        if (trace) {
+            LibRetro::DisplayMessage(result ? "JIT27TRACE STREX callback success"
+                                            : "JIT27TRACE STREX callback compare failed");
+        }
+#endif
+        return result;
     }
     bool MemoryWriteExclusive64(u32 vaddr, u64 value, u64 expected) override {
         return memory.WriteExclusive64(vaddr, value, expected);
@@ -356,6 +386,8 @@ public:
 #ifdef IOS
     u32 last_code_page = ~u32{0};
     unsigned code_page_reports = 0;
+    unsigned instruction_reports = 0;
+    unsigned exclusive_reports = 0;
     unsigned svc_reports = 0;
     unsigned add_tick_reports = 0;
     unsigned remaining_tick_reports = 0;
@@ -430,9 +462,12 @@ void ARM_Dynarmic::Run() {
         // After the proven startup workaround, use longer native JIT runs in
         // Fast Dispatch mode. Keep cycle counting and safe-exit requests active.
         // GetTicksRemaining still respects the scheduler's next event.
-        gAzaharJITBudgetCap =
-            PostStartupJitCap(LibRetro::HasSubmittedSoftwareFrame(),
-                              gAzaharJITFastDispatch.load(std::memory_order_relaxed));
+        const bool video_started = LibRetro::HasSubmittedSoftwareFrame();
+        gAzaharJITBudgetCap = gAzaharJITHyper.load(std::memory_order_relaxed)
+                                  ? HyperJitCap(video_started)
+                                  : PostStartupJitCap(
+                                        video_started,
+                                        gAzaharJITFastDispatch.load(std::memory_order_relaxed));
         jit->Run();
         return;
     }
@@ -748,7 +783,9 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     const std::string jit_mode = LibRetro::FetchVariable("AzaharJITSpeed", "fast");
     const bool turbo_mode = IOSJitSkipProbes(jit_mode);
     const bool hyper_mode = IOSJitHyper(jit_mode);
-    config.code_cache_size = IOSJitCacheSize(jit_mode);
+    // Initial address-space-less cores do not need the full game code cache.
+    // Build 69 reserved four 128 MiB caches before mapping the game process.
+    config.code_cache_size = current_page_table ? IOSJitCacheSize(jit_mode) : 16 * 1024 * 1024;
     config.unsafe_optimizations = IOSJitRelaxedFP(jit_mode);
     // Build #18 confirmed 512 generated guest instructions execute correctly,
     // but full jit->Run() never returns from a tight PC 0x00100034..0x3c loop.
@@ -757,7 +794,7 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // cycle budget. Keep other safe IR optimizations and cycle counting on.
     // Fast Dispatch remains the default; Turbo and Direct RAM are opt-in.
     gAzaharJITFastDispatch.store(jit_mode == "fast" || turbo_mode, std::memory_order_relaxed);
-    gAzaharJITTurboStartup.store(turbo_mode, std::memory_order_relaxed);
+    gAzaharJITTurboStartup.store(!IOSJitUseStartupProbes(jit_mode), std::memory_order_relaxed);
     gAzaharJITHyper.store(hyper_mode, std::memory_order_relaxed);
     config.optimizations = SelectIOSJitOptimizations(config.optimizations, jit_mode);
     if (IOSJitDirectMemory(jit_mode) && current_page_table) {
@@ -775,16 +812,16 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     }
 #endif
     config.enable_cycle_counting = true;
-    // Leave Dynarmic's optional page table unset to isolate generated direct
-    // memory accesses from the rest of the iOS JIT. Loads and stores then use
-    // the existing MemorySystem callbacks, including exclusive accesses.
+    // Startup probes isolate first-instruction and full-dispatch failures.
+    // Fastmem and the compiled exclusive monitor are retained.
     char optimization_status[200];
     std::snprintf(optimization_status, sizeof(optimization_status),
-                  "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s",
+                  "JIT27TRACE mode=%s memory=%s cache=%zu MiB scheduler=%s relaxed_fp=%s startup=%s",
                   jit_mode.c_str(), fastmem_mapped ? "guarded 4GiB fastmem" :
                                                       config.page_table ? "page table" : "callbacks",
                   config.code_cache_size / (1024 * 1024), hyper_mode ? "full deadline" : "capped",
-                  config.unsafe_optimizations ? "on" : "off");
+                  config.unsafe_optimizations ? "on" : "off",
+                  IOSJitUseStartupProbes(jit_mode) ? "probes" : "direct");
     LibRetro::DisplayMessage(optimization_status);
 #else
     if (current_page_table) {

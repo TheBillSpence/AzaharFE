@@ -23,6 +23,11 @@ constexpr bool IOSJitRelaxedFP(std::string_view mode) {
 constexpr bool IOSJitSkipProbes(std::string_view mode) {
     return mode == "turbo" || IOSJitDirectMemory(mode);
 }
+// Keep the proven startup sequence on the most aggressive modes until the
+// device confirms a first frame. Turbo/direct remain raw-start comparisons.
+constexpr bool IOSJitUseStartupProbes(std::string_view mode) {
+    return !IOSJitSkipProbes(mode) || IOSJitHyper(mode);
+}
 constexpr bool IOSJitTrueFastmem(std::string_view mode) {
     return mode == "fastmem" || mode == "fastmemfp";
 }

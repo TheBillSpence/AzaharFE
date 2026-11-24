@@ -479,6 +479,7 @@ void TestOptimizationMode(const std::string& mode) {
         RunActiveBudget(cpu, env, reference, Core::PostStartupJitCap(true, true));
     }
     if (Core::IOSJitHyper(mode)) {
+        Require(Core::IOSJitUseStartupProbes(mode), "hyper must retain startup probes");
         Require(Core::HyperJitCap(false) == 65536, "hyper startup budget");
         Require(Core::LimitJitBudget(1100000, Core::HyperJitCap(true)) == 1100000,
                 "hyper scheduler deadline was truncated");
@@ -514,6 +515,7 @@ void TestGuardedFastmem() {
     auto guards = std::make_unique<std::array<u8, 1u << 18>>();
     guards->fill(0);
     (*guards)[0] = 1;
+    Require(Core::IOSJitUseStartupProbes("fastmem"), "fastmem startup probes required");
     auto config = ConservativeConfig(env);
     config.code_cache_size = Core::IOSJitCacheSize("fastmem");
     config.fastmem_pointer = reinterpret_cast<std::uintptr_t>(mapping);
