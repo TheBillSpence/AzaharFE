@@ -73,7 +73,7 @@
     if (section == 1)
         return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
                  @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache"];
-    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharAsyncShaders"];
+    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders"];
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -191,7 +191,8 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
+        message:[key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized batches scanlines, runs small triangles inline and reduces redundant pixel work. Reference retains the previous dispatch and pixel path. Restart to apply." :
+                [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
                 [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
                 [key isEqual:@"AzaharJITPreset"] ? @"Automatic uses a 128 MiB primary JIT, 32 MiB secondary JITs and experimental 4 GiB guarded fastmem. Falls back to page-table access if the alias window cannot be reserved. Choose Hyper JIT or Fast dispatch to compare." :
                 [key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :

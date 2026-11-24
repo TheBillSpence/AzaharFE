@@ -40,6 +40,10 @@ inline thread_local std::uint64_t guest_writes = 0;
 inline thread_local std::uint64_t guest_code_fetches = 0;
 inline thread_local std::uint64_t tick_queries = 0;
 inline thread_local std::uint64_t tick_commits = 0;
+inline thread_local std::uint64_t sw_triangles = 0;
+inline thread_local std::uint64_t sw_rows = 0;
+inline thread_local std::uint64_t sw_jobs = 0;
+inline thread_local std::uint64_t sw_inline = 0;
 
 inline bool Enabled() {
     return profiling_enabled.load(std::memory_order_relaxed);
@@ -56,6 +60,7 @@ inline void Configure(bool enabled) {
     guest_code_fetches = 0;
     tick_queries = 0;
     tick_commits = 0;
+    sw_triangles = sw_rows = sw_jobs = sw_inline = 0;
     profiling_enabled.store(enabled, std::memory_order_relaxed);
 }
 
@@ -92,6 +97,10 @@ struct Snapshot {
     std::uint64_t code_fetches = 0;
     std::uint64_t timer_queries = 0;
     std::uint64_t timer_commits = 0;
+    std::uint64_t triangles = 0;
+    std::uint64_t rows = 0;
+    std::uint64_t jobs = 0;
+    std::uint64_t inline_triangles = 0;
 
     double Milliseconds(Section section) const {
         return static_cast<double>(ns[static_cast<std::size_t>(section)]) / 1'000'000.0;
@@ -109,11 +118,16 @@ inline Snapshot TakeSnapshot() {
     result.code_fetches = guest_code_fetches;
     result.timer_queries = tick_queries;
     result.timer_commits = tick_commits;
+    result.triangles = sw_triangles;
+    result.rows = sw_rows;
+    result.jobs = sw_jobs;
+    result.inline_triangles = sw_inline;
     guest_reads = 0;
     guest_writes = 0;
     guest_code_fetches = 0;
     tick_queries = 0;
     tick_commits = 0;
+    sw_triangles = sw_rows = sw_jobs = sw_inline = 0;
     return result;
 }
 } // namespace AzaharProfile

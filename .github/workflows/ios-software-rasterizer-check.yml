@@ -1,0 +1,25 @@
+name: AzaharFE Software Rasterizer Regression
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-jit-experiment]
+    paths:
+      - 'src/video_core/renderer_software/**'
+      - 'tools/ios-video-tests/raster_work.cpp'
+      - '.github/workflows/ios-software-rasterizer-check.yml'
+permissions:
+  contents: read
+jobs:
+  raster-work:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check edge arithmetic and scanline partitioning
+        run: |
+          set -euo pipefail
+          c++ -std=c++20 -O2 -Wall -Wextra -Werror -fsanitize=undefined -Isrc \
+            tools/ios-video-tests/raster_work.cpp -o "$RUNNER_TEMP/raster-work"
+          "$RUNNER_TEMP/raster-work"

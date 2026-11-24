@@ -70,6 +70,7 @@ private:
     Pica::PicaCore& pica;
     Pica::RegsInternal& regs;
     std::size_t num_sw_threads;
+    bool optimize_rasterization = false;
     Common::ThreadWorker sw_workers;
     Framebuffer fb;
 };

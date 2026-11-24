@@ -2,7 +2,7 @@
 
 NSArray<NSString *> *AZOptionKeys(void) {
     return @[@"AzaharJITPreset", @"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile",
-             @"AzaharSoftwareThreads", @"citra_graphics_api", @"citra_resolution_factor",
+             @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"citra_graphics_api", @"citra_resolution_factor",
              @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache",
              @"AzaharAsyncShaders"];
 }
@@ -10,6 +10,7 @@ NSString *AZOptionTitle(NSString *key) {
     return @{@"AzaharJITPreset":@"JIT", @"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
              @"AzaharDeepProfile":@"Detailed CPU/GPU profiling",
              @"AzaharSoftwareThreads":@"Software graphics threads",
+             @"AzaharSoftwareRasterizer":@"Software rasterizer",
              @"citra_graphics_api":@"Graphics API",
              @"citra_resolution_factor":@"Output resolution",
              @"citra_layout_option":@"Screen layout",
@@ -24,7 +25,8 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"fastmem", @"fastmemfp", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
     if ([key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
-    if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"2", @"4", @"6"];
+    if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"1", @"2", @"4", @"6"];
+    if ([key isEqual:@"AzaharSoftwareRasterizer"]) return @[@"optimized", @"reference"];
     // Safe default, per-game overrides require explicit experimental opt-in.
     if ([key isEqual:@"citra_graphics_api"]) return @[@"Software", @"Vulkan"];
     if ([key isEqual:@"citra_resolution_factor"]) return @[@"1", @"2", @"3", @"4"];
@@ -42,6 +44,7 @@ NSString *AZChoiceTitle(NSString *key, NSString *v) {
              @"hyperfp":@"Hyper JIT + relaxed FP (highest risk)", @"turbo":@"Turbo JIT (experimental)",
              @"direct":@"Turbo + Direct RAM (high risk)",
              @"auto":@"Automatic", @"Software":@"Software (safe default)",
+             @"optimized":@"Optimized (experimental)", @"reference":@"Reference (previous path)",
              @"Vulkan":@"Vulkan via MoltenVK (experimental)",
              @"1":@"1× Native (400×240)", @"2":@"2× (800×480)",
              @"3":@"3× (1200×720)", @"4":@"4× (1600×960)",

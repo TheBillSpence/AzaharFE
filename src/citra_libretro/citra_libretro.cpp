@@ -415,6 +415,13 @@ void retro_run() {
                           static_cast<unsigned long long>(stats.timer_queries),
                           static_cast<unsigned long long>(stats.timer_commits));
             LibRetro::DisplayMessage(report);
+            std::snprintf(report, sizeof(report),
+                          "PERF27 SW triangles=%llu rows=%llu jobs=%llu inline=%llu",
+                          static_cast<unsigned long long>(stats.triangles),
+                          static_cast<unsigned long long>(stats.rows),
+                          static_cast<unsigned long long>(stats.jobs),
+                          static_cast<unsigned long long>(stats.inline_triangles));
+            LibRetro::DisplayMessage(report);
             gAzaharProfileWindow = now;
         }
     }
