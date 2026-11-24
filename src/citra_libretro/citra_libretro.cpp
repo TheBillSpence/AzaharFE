@@ -57,7 +57,7 @@
 #include "core/loader/loader.h"
 #include "core/memory.h"
 
-#if defined(IOS) && defined(ENABLE_VULKAN)
+#ifdef AZAHAR_IOS_MOLTENVK_BRIDGE
 #include "citra_libretro/ios_moltenvk_bridge.h"
 #endif
 
@@ -90,8 +90,8 @@ public:
 };
 
 CitraLibRetro* emu_instance;
-#if defined(IOS) && defined(ENABLE_VULKAN)
-extern "C" __attribute__((visibility("default"))) bool azahar_ios_vk_game_loaded() {
+#ifdef AZAHAR_IOS_MOLTENVK_BRIDGE
+extern "C" bool azahar_ios_vk_game_loaded() {
     return emu_instance && emu_instance->game_loaded;
 }
 #endif

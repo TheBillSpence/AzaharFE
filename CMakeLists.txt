@@ -458,7 +458,10 @@ if (APPLE)
     find_library(IOSURFACE_LIBRARY IOSurface REQUIRED)
     set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${AVFOUNDATION_LIBRARY} ${IOSURFACE_LIBRARY})
 
-    if (ENABLE_VULKAN AND (NOT ENABLE_LIBRETRO OR IOS))
+    if (ENABLE_LIBRETRO AND ENABLE_VULKAN AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(AZAHAR_IOS_MOLTENVK_BRIDGE ON)
+    endif()
+    if (ENABLE_VULKAN AND (NOT ENABLE_LIBRETRO OR AZAHAR_IOS_MOLTENVK_BRIDGE))
         # Native iPhone libretro embeds MoltenVK in the core dylib. Desktop
         # libretro frontends still supply their own Vulkan runtime.
         if (USE_SYSTEM_MOLTENVK)

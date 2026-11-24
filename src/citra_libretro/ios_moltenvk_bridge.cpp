@@ -169,8 +169,8 @@ bool CopyOutput(unsigned width, unsigned height) {
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy.imageSubresource.layerCount = 1;
         copy.imageExtent = {width, height, 1};
-        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.buffer,
-                               1, &copy);
+        vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               state.buffer, 1, &copy);
 
         VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -185,8 +185,8 @@ bool CopyOutput(unsigned width, unsigned height) {
         after.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         after.newLayout = state.image_layout;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
-                             0, nullptr, 1, &host, 1, &after);
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+                             nullptr, 1, &host, 1, &after);
 
         if (vkEndCommandBuffer(command) == VK_SUCCESS) {
             VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -199,7 +199,8 @@ bool CopyOutput(unsigned width, unsigned height) {
                     return false;
                 }
             }
-            result = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+            result =
+                vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
             state.device_failed = !result;
         }
     }
@@ -307,7 +308,8 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const vo
         return false;
 
     const auto byte_count = static_cast<VkDeviceSize>(width) * height * 4;
-    bool okay = !state.device_failed && EnsureStagingBuffer(byte_count) && CopyOutput(width, height);
+    bool okay =
+        !state.device_failed && EnsureStagingBuffer(byte_count) && CopyOutput(width, height);
     if (okay) {
         state.pixels.resize(static_cast<std::size_t>(byte_count));
         void* mapped = nullptr;
