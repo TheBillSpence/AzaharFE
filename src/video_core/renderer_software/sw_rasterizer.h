@@ -4,12 +4,14 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include "common/thread_worker.h"
 #include "video_core/pica/regs_texturing.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_software/sw_clipper.h"
 #include "video_core/renderer_software/sw_framebuffer.h"
+#include "video_core/renderer_software/sw_raster_work.h"
 
 namespace Pica {
 struct RegsInternal;
@@ -71,7 +73,8 @@ private:
     Pica::RegsInternal& regs;
     std::size_t num_sw_threads;
     bool optimize_rasterization = false;
-    Common::ThreadWorker sw_workers;
+    std::unique_ptr<Common::ThreadWorker> sw_workers;
+    std::unique_ptr<RasterWorkGroup> raster_group;
     Framebuffer fb;
 };
 

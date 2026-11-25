@@ -106,7 +106,7 @@
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section==0 && self.perGame && !self.game) return @"Add a game to set its preferences.";
     if (section==1 && self.sessionOptions) return @"Values used to launch this session.";
-    if (section==1 && self.restartOnClose) return @"Changes restart this game when you close Settings. Save in-game first; unsaved progress will be lost.";
+    if (section==1 && self.restartOnClose) return @"Changes are saved for the next launch. Save in-game before stopping the current session.";
     if (section==1 && (!self.perGame || self.game)) return @"Changes apply when you launch the game.";
     return nil;
 }
@@ -191,7 +191,7 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized batches scanlines, runs small triangles inline and reduces redundant pixel work. Reference retains the previous dispatch and pixel path. Restart to apply." :
+        message:[key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
                 [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
                 [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
                 [key isEqual:@"AzaharJITPreset"] ? @"Automatic uses a 128 MiB primary JIT, 32 MiB secondary JITs and experimental 4 GiB guarded fastmem. Falls back to page-table access if the alias window cannot be reserved. Choose Hyper JIT or Fast dispatch to compare." :

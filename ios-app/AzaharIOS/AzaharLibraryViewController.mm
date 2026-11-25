@@ -450,11 +450,18 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     NSDictionary *after = AZLaunchOptions(self.game);
     BOOL changed = self.settingsSnapshot && AZLaunchOptionsRequireRestart(self.settingsSnapshot, after);
     self.settingsSnapshot = nil;
-    if (changed) {
-        self.previousOptions = self.host.launchOptions;
-        [self restartWithOptions:after];
-    } else {
-        [self refreshInput];
+    [self refreshInput];
+    if (changed && self.host) {
+        // Core options are immutable for a running session. Do not tear down and
+        // immediately recreate Dynarmic/graphics while dismissing UIKit settings.
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Settings saved"
+            message:@"Your current game will keep its existing configuration. New settings apply when you open the game again. Save your progress before stopping."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Continue playing" style:UIAlertActionStyleCancel handler:nil]];
+        __weak AzaharGameViewController *weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"Stop and return to library" style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *action) { [weakSelf stopGame]; }]];
+        [self presentViewController:alert animated:YES completion:nil];
     }
 }
 - (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {

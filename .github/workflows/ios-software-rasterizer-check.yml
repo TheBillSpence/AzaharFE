@@ -20,6 +20,6 @@ jobs:
       - name: Check edge arithmetic and scanline partitioning
         run: |
           set -euo pipefail
-          c++ -std=c++20 -O2 -Wall -Wextra -Werror -fsanitize=undefined -Isrc \
+          c++ -std=c++20 -O2 -Wall -Wextra -Werror -fsanitize=undefined -pthread -Isrc \
             tools/ios-video-tests/raster_work.cpp -o "$RUNNER_TEMP/raster-work"
           "$RUNNER_TEMP/raster-work"

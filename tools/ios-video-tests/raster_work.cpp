@@ -22,6 +22,16 @@ int main() {
         }
     }
     for (std::size_t workers : {1, 2, 4, 6}) {
+        RasterWorkGroup group(workers);
+        for (std::size_t iteration = 0; iteration < 1000; ++iteration) {
+            const auto rows = iteration % 127 + 1;
+            std::vector<int> hits(rows, 0);
+            auto visit = [&](std::size_t row) { ++hits[row]; };
+            group.Run(rows, visit);
+            for (const auto hit : hits) {
+                assert(hit == 1);
+            }
+        }
         for (std::size_t rows = 1; rows <= 1024; ++rows) {
             for (std::size_t columns : {1, 8, 400}) {
                 const auto plan = RasterWorkPlan::Make(columns, rows, workers, true);
@@ -35,7 +45,7 @@ int main() {
                     ++jobs;
                 }
                 assert(processed == rows);
-                assert(plan.inline_work || jobs <= workers * 2);
+                assert(plan.inline_work || jobs <= workers);
                 const auto reference = RasterWorkPlan::Make(columns, rows, workers, false);
                 assert(!reference.inline_work && reference.rows_per_job == 1);
             }

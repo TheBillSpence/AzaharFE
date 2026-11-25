@@ -218,7 +218,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 + (NSString *)sessionJITStatus {
     AzaharEmulator *host = sCurrentEmulator;
-    if (host && !host->_stopping.load() && host->_guestRan.load()) return @"JIT is active";
+    if (host) {
+        if (host->_stopping.load()) return @"Game stopping";
+        if (host->_guestRan.load()) return @"JIT is active";
+        return host->_jitPending.load() ? @"Checking JIT…" : @"JIT is inactive";
+    }
     if (AzaharDebuggerIsEnabled())
         return sJITProbeFailed.load() ? @"JIT unavailable" : @"JIT is active";
     sJITProbeFailed.store(false);
@@ -402,8 +406,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _requestJITHalt = nullptr;
             if (_libraryHandle) {
+                [self writeDiagnostic:@"LIFECYCLE closing core library"];
                 dlclose(_libraryHandle);
                 _libraryHandle = nullptr;
+                [self writeDiagnostic:@"LIFECYCLE core library closed"];
             }
         }
         @synchronized (self) {
@@ -600,10 +606,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _audioEpoch.fetch_add(1);
         if (paused) {
             _input.Enable(false);
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                if (self->_paused.load() && !self->_stopping.load())
-                    [self requestJITHalt];
-            });
+            // The core checks the frame-stop callback at scheduler boundaries.
+            // Normal menu pauses never call into generated code from a second thread.
         }
     }
 }
@@ -965,9 +969,15 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)stop {
     if (_stopping.exchange(true)) return;
     _input.Enable(false);
-    // Do not block UIKit on the core or its JIT bridge lock.
+    // Prefer cooperative exit; only interrupt a genuinely delayed worker.
+    // Keep the bridge/library lifetime protected and never block UIKit.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        [self requestJITHalt];
+        [self writeDiagnostic:@"LIFECYCLE stop requested; waiting for cooperative exit"];
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                   dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        if (self->_stopping.load() && !self->_pauseAcknowledged.load())
+            [self requestJITHalt];
     });
 }
 

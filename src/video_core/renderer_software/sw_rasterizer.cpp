@@ -128,13 +128,18 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
 #else
       num_sw_threads{std::max(std::thread::hardware_concurrency(), 2U)},
 #endif
-      sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {
+      fb{memory, regs.framebuffer} {
 #ifdef IOS
     optimize_rasterization =
         LibRetro::FetchVariable("AzaharSoftwareRasterizer", "optimized") != "reference";
-    LibRetro::DisplayMessage(optimize_rasterization ? "SW27 rasterizer=optimized"
+    LibRetro::DisplayMessage(optimize_rasterization ? "SW27 rasterizer=workgroup-v2"
                                                     : "SW27 rasterizer=reference");
 #endif
+    if (optimize_rasterization) {
+        raster_group = std::make_unique<RasterWorkGroup>(num_sw_threads);
+    } else {
+        sw_workers = std::make_unique<Common::ThreadWorker>(num_sw_threads, "SwRenderer workers");
+    }
 }
 
 void RasterizerSoftware::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
@@ -338,6 +343,19 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
     const auto textures = regs.texturing.GetTextures();
     const auto tev_stages = regs.texturing.GetTevStages();
+    std::array<bool, 3> use_uv{true, true, true};
+    if (optimize_rasterization) {
+        use_uv = {textures[0].enabled != 0, textures[1].enabled != 0, false};
+        if (textures[2].enabled) {
+            use_uv[regs.texturing.main_config.texture2_use_coord1 ? 1 : 2] = true;
+        }
+        if (regs.texturing.main_config.texture3_enable) {
+            const auto coordinate = regs.texturing.main_config.texture3_coordinates.Value();
+            if (coordinate < use_uv.size()) {
+                use_uv[coordinate] = true;
+            }
+        }
+    }
 
     if (min_x >= max_x || min_y >= max_y) {
         return;
@@ -359,6 +377,36 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         regs.rasterizer.depthmap_enable == RasterizerRegs::DepthBuffering::WBuffering;
     const auto& output_merger = regs.framebuffer.output_merger;
     const bool color_write = regs.framebuffer.framebuffer.allow_color_write != 0;
+    const auto& framebuffer = regs.framebuffer.framebuffer;
+    const bool early_depth = optimize_rasterization && output_merger.depth_test_enable &&
+                             !output_merger.stencil_test.enable &&
+                             output_merger.depth_test_func != FramebufferRegs::CompareFunc::Always &&
+                             output_merger.fragment_operation_mode ==
+                                 FramebufferRegs::FragmentOperationMode::Default;
+    const auto depth_pass = [&](u16 x, u16 y, float depth) {
+        const auto bits = FramebufferRegs::DepthBitsPerPixel(framebuffer.depth_format);
+        const u32 z = static_cast<u32>(depth * ((1 << bits) - 1));
+        const u32 ref = fb.GetDepth(x >> 4, y >> 4);
+        switch (output_merger.depth_test_func) {
+        case FramebufferRegs::CompareFunc::Never:
+            return false;
+        case FramebufferRegs::CompareFunc::Always:
+            return true;
+        case FramebufferRegs::CompareFunc::Equal:
+            return z == ref;
+        case FramebufferRegs::CompareFunc::NotEqual:
+            return z != ref;
+        case FramebufferRegs::CompareFunc::LessThan:
+            return z < ref;
+        case FramebufferRegs::CompareFunc::LessThanOrEqual:
+            return z <= ref;
+        case FramebufferRegs::CompareFunc::GreaterThan:
+            return z > ref;
+        case FramebufferRegs::CompareFunc::GreaterThanOrEqual:
+            return z >= ref;
+        }
+        return true;
+    };
 
     const auto process_scanline = [&](u16 y) {
         const auto edge = [&](unsigned a, unsigned b, int bias) {
@@ -418,6 +466,10 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
             // Clamp the result
             depth = std::clamp(depth, 0.0f, 1.0f);
+            // No writes here: alpha test and depth/stencil updates retain their original order.
+            if (early_depth && !depth_pass(x, y, depth)) {
+                continue;
+            }
 
             /**
              * Perspective correct attribute interpolation:
@@ -462,13 +514,19 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
                           255)),
             };
 
-            std::array<Common::Vec2<f24>, 3> uv;
-            uv[0].u() = get_interpolated_attribute(v0.tc0.u(), v1.tc0.u(), v2.tc0.u());
-            uv[0].v() = get_interpolated_attribute(v0.tc0.v(), v1.tc0.v(), v2.tc0.v());
-            uv[1].u() = get_interpolated_attribute(v0.tc1.u(), v1.tc1.u(), v2.tc1.u());
-            uv[1].v() = get_interpolated_attribute(v0.tc1.v(), v1.tc1.v(), v2.tc1.v());
-            uv[2].u() = get_interpolated_attribute(v0.tc2.u(), v1.tc2.u(), v2.tc2.u());
-            uv[2].v() = get_interpolated_attribute(v0.tc2.v(), v1.tc2.v(), v2.tc2.v());
+            std::array<Common::Vec2<f24>, 3> uv{};
+            if (use_uv[0]) {
+                uv[0].u() = get_interpolated_attribute(v0.tc0.u(), v1.tc0.u(), v2.tc0.u());
+                uv[0].v() = get_interpolated_attribute(v0.tc0.v(), v1.tc0.v(), v2.tc0.v());
+            }
+            if (use_uv[1]) {
+                uv[1].u() = get_interpolated_attribute(v0.tc1.u(), v1.tc1.u(), v2.tc1.u());
+                uv[1].v() = get_interpolated_attribute(v0.tc1.v(), v1.tc1.v(), v2.tc1.v());
+            }
+            if (use_uv[2]) {
+                uv[2].u() = get_interpolated_attribute(v0.tc2.u(), v1.tc2.u(), v2.tc2.u());
+                uv[2].v() = get_interpolated_attribute(v0.tc2.v(), v1.tc2.v(), v2.tc2.v());
+            }
 
             // Sample bound texture units.
             const f24 tc0_w = get_interpolated_attribute(v0.tc0_w, v1.tc0_w, v2.tc0_w);
@@ -534,7 +592,7 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         if (work.inline_work) {
             ++AzaharProfile::sw_inline;
         } else {
-            AzaharProfile::sw_jobs += (rows + work.rows_per_job - 1) / work.rows_per_job;
+            AzaharProfile::sw_jobs += optimize_rasterization ? 1 : rows;
         }
     }
 #endif
@@ -544,16 +602,23 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         }
         return;
     }
+    if (optimize_rasterization) {
+        auto render_row = [&](std::size_t row) {
+            process_scanline(static_cast<u16>(min_y + 8 + row * 16));
+        };
+        raster_group->Run(rows, render_row);
+        return;
+    }
     for (std::size_t first = 0; first < rows; first += work.rows_per_job) {
         const auto end = std::min(rows, first + work.rows_per_job);
-        sw_workers.QueueWork([&, first, end] {
+        sw_workers->QueueWork([&, first, end] {
             for (std::size_t row = first; row < end; ++row) {
                 process_scanline(static_cast<u16>(min_y + 8 + row * 16));
             }
         });
     }
     // Preserve triangle order and register lifetime.
-    sw_workers.WaitForRequests();
+    sw_workers->WaitForRequests();
 }
 
 std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
