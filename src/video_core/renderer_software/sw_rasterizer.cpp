@@ -362,10 +362,9 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
     const auto process_scanline = [&](u16 y) {
         const auto edge = [&](unsigned a, unsigned b, int bias) {
-            return incremental
-                       ? ScanlineEdge::Make(vtxpos[a].x, vtxpos[a].y, vtxpos[b].x, vtxpos[b].y,
-                                            min_x + 8, y, bias)
-                       : ScanlineEdge{};
+            return incremental ? ScanlineEdge::Make(vtxpos[a].x, vtxpos[a].y, vtxpos[b].x,
+                                                    vtxpos[b].y, min_x + 8, y, bias)
+                               : ScanlineEdge{};
         };
         const auto e0 = edge(1, 2, bias0);
         const auto e1 = edge(2, 0, bias1);
@@ -440,8 +439,7 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
              **/
             const auto get_interpolated_attribute = [&](f24 attr0, f24 attr1, f24 attr2) {
                 auto attr_over_w = Common::MakeVec(attr0, attr1, attr2);
-                f24 interpolated_attr_over_w =
-                    Common::Dot(attr_over_w, baricentric_coordinates);
+                f24 interpolated_attr_over_w = Common::Dot(attr_over_w, baricentric_coordinates);
                 return interpolated_attr_over_w * interpolated_w_inverse;
             };
 
@@ -482,12 +480,9 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             if (!regs.lighting.disable) {
                 const auto normquat =
                     Common::Quaternion<f32>{
-                        {get_interpolated_attribute(v0.quat.x, v1.quat.x, v2.quat.x)
-                             .ToFloat32(),
-                         get_interpolated_attribute(v0.quat.y, v1.quat.y, v2.quat.y)
-                             .ToFloat32(),
-                         get_interpolated_attribute(v0.quat.z, v1.quat.z, v2.quat.z)
-                             .ToFloat32()},
+                        {get_interpolated_attribute(v0.quat.x, v1.quat.x, v2.quat.x).ToFloat32(),
+                         get_interpolated_attribute(v0.quat.y, v1.quat.y, v2.quat.y).ToFloat32(),
+                         get_interpolated_attribute(v0.quat.z, v1.quat.z, v2.quat.z).ToFloat32()},
                         get_interpolated_attribute(v0.quat.w, v1.quat.w, v2.quat.w).ToFloat32(),
                     }
                         .Normalized();
@@ -497,15 +492,13 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
                     get_interpolated_attribute(v0.view.y, v1.view.y, v2.view.y).ToFloat32(),
                     get_interpolated_attribute(v0.view.z, v1.view.z, v2.view.z).ToFloat32(),
                 };
-                std::tie(primary_fragment_color, secondary_fragment_color) =
-                    ComputeFragmentsColors(regs.lighting, pica.lighting, normquat, view,
-                                           texture_color);
+                std::tie(primary_fragment_color, secondary_fragment_color) = ComputeFragmentsColors(
+                    regs.lighting, pica.lighting, normquat, view, texture_color);
             }
 
             // Write the TEV stages.
-            auto combiner_output =
-                WriteTevConfig(texture_color, tev_stages, primary_color, primary_fragment_color,
-                               secondary_fragment_color);
+            auto combiner_output = WriteTevConfig(texture_color, tev_stages, primary_color,
+                                                  primary_fragment_color, secondary_fragment_color);
 
             if (output_merger.fragment_operation_mode ==
                 FramebufferRegs::FragmentOperationMode::Shadow) {
