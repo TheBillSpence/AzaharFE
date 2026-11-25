@@ -17,6 +17,7 @@
 @property (nonatomic, readonly) BOOL jitActive;
 
 + (NSString *)sessionJITStatus;
++ (BOOL)hasActiveSession;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *launchOptions;
 
 // Loads the bundled libretro dylib and starts the emulation loop on a worker queue.

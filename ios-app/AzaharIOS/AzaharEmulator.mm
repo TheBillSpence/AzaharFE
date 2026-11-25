@@ -96,6 +96,7 @@ static bool AzaharProbeJITMapping(void (^report)(NSString *)) {
 @class AzaharEmulator;
 
 static __weak AzaharEmulator *sCurrentEmulator;
+static unsigned long long sSessionNumber = 0;
 // A failed execution test takes precedence over the passive debugger flag.
 static std::atomic<bool> sJITProbeFailed{false};
 
@@ -215,6 +216,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 @implementation AzaharEmulator
+
++ (BOOL)hasActiveSession {
+    @synchronized (AzaharEmulator.class) { return sCurrentEmulator != nil; }
+}
 
 + (NSString *)sessionJITStatus {
     AzaharEmulator *host = sCurrentEmulator;
@@ -346,6 +351,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)startGameAtURL:(NSURL *)url options:(NSDictionary<NSString *, NSString *> *)options error:(NSError **)error {
+    unsigned long long sessionNumber;
     @synchronized (AzaharEmulator.class) {
         if (sCurrentEmulator) {
             if (error) *error = [NSError errorWithDomain:@"AzaharIOS" code:3
@@ -387,11 +393,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _diagnosticsFile = fopen(path.fileSystemRepresentation, "w");
         if (!_diagnosticsFile) NSLog(@"Could not open AzaharJITDiagnostics.txt");
         sCurrentEmulator = self;
+        sessionNumber = ++sSessionNumber;
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [self writeDiagnostic:[NSString stringWithFormat:
+            @"LIFECYCLE session %llu launch options=%@", sessionNumber, self.launchOptions]];
+        [self writeDiagnostic:@"LIFECYCLE opening core library"];
         NSError *loadError = nil;
         if ([self loadLibrary:&loadError]) {
+            [self writeDiagnostic:@"LIFECYCLE core library opened"];
             [self runGameAtURL:url];
         } else if (!_stopping.load()) {
             NSString *message = loadError.localizedDescription ?: @"Unable to load core.";
@@ -412,6 +423,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 [self writeDiagnostic:@"LIFECYCLE core library closed"];
             }
         }
+        [self writeDiagnostic:@"LIFECYCLE session teardown finished; library launch may resume"];
         @synchronized (self) {
             if (_diagnosticsFile) fclose(_diagnosticsFile);
             _diagnosticsFile = nullptr;

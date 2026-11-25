@@ -189,6 +189,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, strong) AZCirclePad *circlePad;
 @property (nonatomic) BOOL settingsOpen;
 @property (nonatomic) BOOL restartPending;
+@property (nonatomic) BOOL leavingGame;
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *settingsSnapshot;
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *previousOptions;
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pendingOptions;
@@ -355,7 +356,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)refreshInput {
-    BOOL enabled = !self.settingsOpen && !self.restartPending && !self.audioInterrupted && self.viewIfLoaded.window &&
+    BOOL enabled = !self.leavingGame && !self.settingsOpen && !self.restartPending && !self.audioInterrupted && self.viewIfLoaded.window &&
         self.navigationController.topViewController == self &&
         UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
     [self.host setPaused:!enabled];
@@ -384,7 +385,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 - (void)showSettings {
-    if (self.restartPending || self.settingsOpen) return;
+    if (self.leavingGame || self.restartPending || self.settingsOpen) return;
     self.settingsSnapshot = AZLaunchOptions(self.game);
     self.settingsOpen = YES;
     [self refreshInput];
@@ -441,6 +442,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.host = nil;
     self.circlePad.host = nil;
     self.screen.host = nil;
+    if (self.leavingGame) {
+        if (self.navigationController.topViewController == self)
+            [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
     [self maybeStartRestart];
 }
 
@@ -472,11 +478,26 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)stopGame {
+    if (self.leavingGame) return;
     self.restartPending = NO;
     self.pendingOptions = nil;
-    self.host.delegate = nil;
+    self.leavingGame = YES;
+    self.status.text = @"Stopping game and releasing core…";
+    [self.host setInputEnabled:NO];
+    [self.circlePad centerStick];
+    if (!self.host) {
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
+    // Wait asynchronously for DidFinish, including dylib close. Keep the
+    // navigation controller interactive; never join the emulation thread here.
     [self.host stop];
-    [self.navigationController popViewControllerAnimated:YES];
+    __weak AzaharGameViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        AzaharGameViewController *strongSelf = weakSelf;
+        if (strongSelf.leavingGame && strongSelf.host)
+            strongSelf.status.text = @"Core still stopping. Back can return to library; launching stays blocked until teardown finishes.";
+    });
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -501,20 +522,20 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image {
-    if (self.restartPending) return;
+    if (self.leavingGame || self.restartPending) return;
     self.previousOptions = nil;
     self.screen.image = image;
     // FPS callback updates the status once per second.
 }
 
 - (void)azaharEmulatorDidChangeJITStatus:(NSString *)status {
-    if (self.restartPending) return;
+    if (self.leavingGame || self.restartPending) return;
     self.status.text = status;
     self.navigationItem.prompt = [AzaharEmulator sessionJITStatus];
 }
 
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive {
-    if (self.restartPending) return;
+    if (self.leavingGame || self.restartPending) return;
     BOOL requested = self.host.experimentalJITEnabled;
     NSString *mode = jitActive ? @"JIT running" : (self.host.jitActive ? @"JIT prepared" :
                      (requested ? @"JIT unavailable (interpreter)" : @"Interpreter"));
@@ -523,7 +544,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)azaharEmulatorDidFail:(NSString *)message {
-    if (self.restartPending) return;
+    if (self.leavingGame || self.restartPending) return;
     self.status.text = @"Game could not start";
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Azahar"
         message:message preferredStyle:UIAlertControllerStyleAlert];
@@ -632,6 +653,14 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if ([AzaharEmulator hasActiveSession]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Previous game still stopping"
+            message:@"Wait for the previous core to finish releasing its resources before launching again. If it never finishes, export the diagnostics and reopen the app."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
     if (self.gameSelected) self.gameSelected(self.games[indexPath.row]);
     [self.navigationController pushViewController:
         [[AzaharGameViewController alloc] initWithGame:self.games[indexPath.row]]
