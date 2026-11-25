@@ -67,8 +67,9 @@ public:
     static Color Run(const Program& program, const Color& primary, const Color& lighting,
                      const Color& secondary, const std::array<Color, 4>& textures,
                      const Uniforms& uniforms) {
-        const Inputs inputs{Pack(primary), Pack(lighting), Pack(secondary), Pack(textures[0]),
-                            Pack(textures[1]), Pack(textures[2]), Pack(textures[3])};
+        const Inputs inputs{Pack(primary),     Pack(lighting),    Pack(secondary),
+                            Pack(textures[0]), Pack(textures[1]), Pack(textures[2]),
+                            Pack(textures[3])};
         return Unpack(program.run(inputs.data(), uniforms.data()));
     }
 
@@ -78,8 +79,8 @@ public:
 
 private:
     static Color Unpack(u32 color) {
-        return {static_cast<u8>(color), static_cast<u8>(color >> 8),
-                static_cast<u8>(color >> 16), static_cast<u8>(color >> 24)};
+        return {static_cast<u8>(color), static_cast<u8>(color >> 8), static_cast<u8>(color >> 16),
+                static_cast<u8>(color >> 24)};
     }
 
     static Source ColorSource(const Stage& s, std::size_t stage, unsigned input) {
@@ -91,18 +92,21 @@ private:
     }
 
     static Source AlphaSource(const Stage& s, unsigned input) {
-        return input == 0 ? s.alpha_source1.Value()
-                          : input == 1 ? s.alpha_source2.Value() : s.alpha_source3.Value();
+        return input == 0   ? s.alpha_source1.Value()
+               : input == 1 ? s.alpha_source2.Value()
+                            : s.alpha_source3.Value();
     }
 
     static Stage::ColorModifier ColorModifier(const Stage& s, unsigned input) {
-        return input == 0 ? s.color_modifier1.Value()
-                          : input == 1 ? s.color_modifier2.Value() : s.color_modifier3.Value();
+        return input == 0   ? s.color_modifier1.Value()
+               : input == 1 ? s.color_modifier2.Value()
+                            : s.color_modifier3.Value();
     }
 
     static Stage::AlphaModifier AlphaModifier(const Stage& s, unsigned input) {
-        return input == 0 ? s.alpha_modifier1.Value()
-                          : input == 1 ? s.alpha_modifier2.Value() : s.alpha_modifier3.Value();
+        return input == 0   ? s.alpha_modifier1.Value()
+               : input == 1 ? s.alpha_modifier2.Value()
+                            : s.alpha_modifier3.Value();
     }
 
     static bool ValidSource(Source src) {
@@ -193,6 +197,7 @@ private:
 
     Program Compile(std::span<const Stage, 6> stages, u32 masks) {
         using namespace oaknut;
+        using namespace oaknut::util;
         for (std::size_t i = 0; i < stages.size(); ++i) {
             if (!ValidStage(stages[i], i)) {
                 return {};
@@ -314,13 +319,12 @@ private:
             const auto& s = stages[i];
             const auto color_op = s.color_op.Value();
             const bool dot = color_op == Operation::Dot3_RGB || color_op == Operation::Dot3_RGBA;
-            const bool pass_through = i != 0 && color_op == Operation::Replace &&
-                                      s.alpha_op == Operation::Replace &&
-                                      s.color_source1 == Source::Previous &&
-                                      s.alpha_source1 == Source::Previous &&
-                                      s.color_modifier1 == Stage::ColorModifier::SourceColor &&
-                                      s.alpha_modifier1 == Stage::AlphaModifier::SourceAlpha &&
-                                      s.GetColorMultiplier() == 1 && s.GetAlphaMultiplier() == 1;
+            const bool pass_through =
+                i != 0 && color_op == Operation::Replace && s.alpha_op == Operation::Replace &&
+                s.color_source1 == Source::Previous && s.alpha_source1 == Source::Previous &&
+                s.color_modifier1 == Stage::ColorModifier::SourceColor &&
+                s.alpha_modifier1 == Stage::AlphaModifier::SourceAlpha &&
+                s.GetColorMultiplier() == 1 && s.GetAlphaMultiplier() == 1;
             if (!pass_through) {
                 if (dot) {
                     out.MOV(W12, WZR);

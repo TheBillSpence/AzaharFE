@@ -39,8 +39,8 @@ public:
             }
             char message[128];
             std::snprintf(message, sizeof(message),
-                          "SUPER27 shader slab requesting %zu KiB (total %zu KiB)",
-                          size / 1024, allocated / 1024);
+                          "SUPER27 shader slab requesting %zu KiB (total %zu KiB)", size / 1024,
+                          allocated / 1024);
             LibRetro::DisplayMessage(message);
             auto next = std::make_shared<oaknut::CodeBlock>(size);
             LibRetro::DisplayMessage("SUPER27 shader slab allocated");

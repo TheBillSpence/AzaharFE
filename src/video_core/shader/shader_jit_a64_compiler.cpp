@@ -992,7 +992,8 @@ void JitShader::FindReturnOffsets() {
 void JitShader::Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_code_,
                         const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data_
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
-                        , IOSShaderCodePool* pool
+                        ,
+                        IOSShaderCodePool* pool
 #endif
 ) {
     program_code = program_code_;

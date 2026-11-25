@@ -9,10 +9,10 @@
 #include "common/thread_worker.h"
 #include "video_core/pica/regs_texturing.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_software/ios_fragment_jit.h"
 #include "video_core/renderer_software/sw_clipper.h"
 #include "video_core/renderer_software/sw_framebuffer.h"
 #include "video_core/renderer_software/sw_raster_work.h"
-#include "video_core/renderer_software/ios_fragment_jit.h"
 
 namespace Pica {
 struct RegsInternal;

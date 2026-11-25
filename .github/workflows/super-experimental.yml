@@ -199,6 +199,14 @@ jobs:
             -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
             -DCITRA_WARNINGS_AS_ERRORS=OFF
 
+      - name: Compile SUPER shader and rasterizer objects first
+        run: |
+          set -euo pipefail
+          ninja -C build-ios-libretro -j 3 \
+            src/video_core/CMakeFiles/video_core.dir/renderer_software/sw_rasterizer.cpp.o \
+            src/video_core/CMakeFiles/video_core.dir/shader/shader_jit.cpp.o \
+            src/video_core/CMakeFiles/video_core.dir/shader/shader_jit_a64_compiler.cpp.o
+
       - name: Build Azahar libretro backend
         run: |
           set -euo pipefail

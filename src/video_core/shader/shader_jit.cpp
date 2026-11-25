@@ -53,7 +53,8 @@ void JitEngine::SetupBatch(ShaderSetup& setup, u32 entry_point) {
                 LibRetro::DisplayMessage("SUPER27 native ARM64 vertex shader compiled");
             }
         } catch (const std::bad_alloc&) {
-            // Remember this failed program; use the interpreter instead of retrying a BRK each draw.
+            // Remember this failed program; use the interpreter instead of retrying a BRK each
+            // draw.
             shader.reset();
             LibRetro::DisplayMessage("SUPER27 shader allocation failed; using shader interpreter");
         }

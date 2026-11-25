@@ -356,8 +356,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
     // Compile before publishing worker tasks; all workers only execute immutable code.
     const auto& buffer_config = regs.texturing.tev_combiner_buffer_input;
-    const u32 buffer_masks = buffer_config.update_mask_rgb.Value() |
-                             (buffer_config.update_mask_a.Value() << 4);
+    const u32 buffer_masks =
+        buffer_config.update_mask_rgb.Value() | (buffer_config.update_mask_a.Value() << 4);
     IOSFragmentJit::Uniforms fragment_uniforms{};
     for (std::size_t i = 0; i < tev_stages.size(); ++i) {
         fragment_uniforms[i] = tev_stages[i].const_color;
@@ -403,11 +403,11 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
     const auto& output_merger = regs.framebuffer.output_merger;
     const bool color_write = regs.framebuffer.framebuffer.allow_color_write != 0;
     const auto& framebuffer = regs.framebuffer.framebuffer;
-    const bool early_depth = optimize_rasterization && output_merger.depth_test_enable &&
-                             !output_merger.stencil_test.enable &&
-                             output_merger.depth_test_func != FramebufferRegs::CompareFunc::Always &&
-                             output_merger.fragment_operation_mode ==
-                                 FramebufferRegs::FragmentOperationMode::Default;
+    const bool early_depth =
+        optimize_rasterization && output_merger.depth_test_enable &&
+        !output_merger.stencil_test.enable &&
+        output_merger.depth_test_func != FramebufferRegs::CompareFunc::Always &&
+        output_merger.fragment_operation_mode == FramebufferRegs::FragmentOperationMode::Default;
     const auto depth_pass = [&](u16 x, u16 y, float depth) {
         const auto bits = FramebufferRegs::DepthBitsPerPixel(framebuffer.depth_format);
         const u32 z = static_cast<u32>(depth * ((1 << bits) - 1));
@@ -597,13 +597,13 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
             // Write the TEV stages.
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
-            auto combiner_output = native_fragment
-                                       ? IOSFragmentJit::Run(*native_fragment, primary_color,
-                                                             primary_fragment_color,
-                                                             secondary_fragment_color, texture_color,
-                                                             fragment_uniforms)
-                                       : WriteTevConfig(texture_color, tev_stages, primary_color,
-                                                        primary_fragment_color, secondary_fragment_color);
+            auto combiner_output =
+                native_fragment
+                    ? IOSFragmentJit::Run(*native_fragment, primary_color, primary_fragment_color,
+                                          secondary_fragment_color, texture_color,
+                                          fragment_uniforms)
+                    : WriteTevConfig(texture_color, tev_stages, primary_color,
+                                     primary_fragment_color, secondary_fragment_color);
 #else
             auto combiner_output = WriteTevConfig(texture_color, tev_stages, primary_color,
                                                   primary_fragment_color, secondary_fragment_color);
@@ -647,9 +647,7 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         }
     }
 #endif
-    const auto process_scanline = [&](u16 y) {
-        process_span(y, min_x + 8, max_x);
-    };
+    const auto process_scanline = [&](u16 y) { process_span(y, min_x + 8, max_x); };
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
     // Per-primitive 8x8 tile traversal. Keep the primitive barrier: no deferred
     // draw reordering or framebuffer/texture lifetime changes.

@@ -10,8 +10,8 @@
 #include <array>
 #include <bitset>
 #include <cstddef>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 #include <nihstro/shader_bytecode.h>
@@ -52,7 +52,8 @@ public:
     void Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_code,
                  const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
-                 , IOSShaderCodePool* pool = nullptr
+                 ,
+                 IOSShaderCodePool* pool = nullptr
 #endif
     );
 
