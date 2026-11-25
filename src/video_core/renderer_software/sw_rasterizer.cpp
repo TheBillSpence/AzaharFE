@@ -142,7 +142,7 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
     if (optimize_rasterization && LibRetro::CanUseJIT() &&
         LibRetro::FetchVariable("AzaharShaderJIT", "off") == "on") {
         fragment_jit = std::make_unique<IOSFragmentJit>();
-        LibRetro::DisplayMessage("SUPER27 fragment JIT: restricted Replace/Modulate compiler");
+        LibRetro::DisplayMessage("SUPER27 fragment JIT: full TEV compiler v2");
     }
 #endif
     if (optimize_rasterization) {
@@ -355,7 +355,18 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
     const auto tev_stages = regs.texturing.GetTevStages();
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
     // Compile before publishing worker tasks; all workers only execute immutable code.
-    const auto* native_fragment = fragment_jit ? fragment_jit->Get(tev_stages) : nullptr;
+    const auto& buffer_config = regs.texturing.tev_combiner_buffer_input;
+    const u32 buffer_masks = buffer_config.update_mask_rgb.Value() |
+                             (buffer_config.update_mask_a.Value() << 4);
+    IOSFragmentJit::Uniforms fragment_uniforms{};
+    for (std::size_t i = 0; i < tev_stages.size(); ++i) {
+        fragment_uniforms[i] = tev_stages[i].const_color;
+    }
+    const auto& buffer_color = regs.texturing.tev_combiner_buffer_color;
+    fragment_uniforms[6] = buffer_color.r.Value() | (buffer_color.g.Value() << 8) |
+                           (buffer_color.b.Value() << 16) | (buffer_color.a.Value() << 24);
+    const auto* native_fragment =
+        fragment_jit ? fragment_jit->Get(tev_stages, buffer_masks) : nullptr;
 #endif
     std::array<bool, 3> use_uv{true, true, true};
     if (optimize_rasterization) {
@@ -589,7 +600,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             auto combiner_output = native_fragment
                                        ? IOSFragmentJit::Run(*native_fragment, primary_color,
                                                              primary_fragment_color,
-                                                             secondary_fragment_color, texture_color)
+                                                             secondary_fragment_color, texture_color,
+                                                             fragment_uniforms)
                                        : WriteTevConfig(texture_color, tev_stages, primary_color,
                                                         primary_fragment_color, secondary_fragment_color);
 #else

@@ -191,7 +191,7 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharShaderJIT"] ? @"Experimental native ARM64 vertex shader compiler plus restricted software fragment compiler. Requires CPU JIT permission; unsupported fragment states use the reference combiner. Reopen the game to apply." :
+        message:[key isEqual:@"AzaharShaderJIT"] ? @"Experimental ARM64 vertex shader and full TEV fragment combiner compiler. Requires CPU JIT permission; invalid states or failed native validation use the reference combiner. Reopen the game to apply." :
                 [key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
                 [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
                 [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
