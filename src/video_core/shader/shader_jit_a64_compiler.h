@@ -11,6 +11,7 @@
 #include <bitset>
 #include <cstddef>
 #include <optional>
+#include <memory>
 #include <utility>
 #include <vector>
 #include <nihstro/shader_bytecode.h>
@@ -30,6 +31,10 @@ struct ShaderUnit;
 
 namespace Pica::Shader {
 
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+class IOSShaderCodePool;
+#endif
+
 /**
  * This class implements the shader JIT compiler. It recompiles a Pica shader program into x86_64
  * code that can be executed on the host machine directly.
@@ -40,12 +45,16 @@ public:
 
     void Run(const ShaderSetup& setup, ShaderUnit& state, u32 offset) const {
         program(&setup.uniforms, &state,
-                reinterpret_cast<const std::byte*>(code_mem->ptr()) +
+                reinterpret_cast<const std::byte*>(code_mem->ptr()) + code_offset +
                     instruction_labels[offset].offset());
     }
 
     void Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_code,
-                 const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data);
+                 const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+                 , IOSShaderCodePool* pool = nullptr
+#endif
+    );
 
     void Compile_ADD(Instruction instr);
     void Compile_DP3(Instruction instr);
@@ -79,7 +88,8 @@ public:
 
 private:
     std::vector<u32> code_vec;
-    std::unique_ptr<oaknut::CodeBlock> code_mem;
+    std::shared_ptr<oaknut::CodeBlock> code_mem;
+    std::size_t code_offset = 0;
 
     void Compile_Block(u32 end);
     void Compile_NextInstr();

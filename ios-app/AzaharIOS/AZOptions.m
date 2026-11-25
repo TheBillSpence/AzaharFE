@@ -1,7 +1,7 @@
 #import "AZOptions.h"
 
 NSArray<NSString *> *AZOptionKeys(void) {
-    return @[@"AzaharJITPreset", @"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile",
+    return @[@"AzaharJITPreset", @"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile",
              @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"citra_graphics_api", @"citra_resolution_factor",
              @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache",
              @"AzaharAsyncShaders"];
@@ -9,6 +9,7 @@ NSArray<NSString *> *AZOptionKeys(void) {
 NSString *AZOptionTitle(NSString *key) {
     return @{@"AzaharJITPreset":@"JIT", @"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
              @"AzaharDeepProfile":@"Detailed CPU/GPU profiling",
+             @"AzaharShaderJIT":@"Vertex + fragment Shader JIT",
              @"AzaharSoftwareThreads":@"Software graphics threads",
              @"AzaharSoftwareRasterizer":@"Software rasterizer",
              @"citra_graphics_api":@"Graphics API",
@@ -23,7 +24,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharExperimentalJIT"]) return @[@"off", @"on"];
     // The first value preserves the speed default for legacy manual configurations.
     if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"fastmem", @"fastmemfp", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
-    if ([key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
+    if ([key isEqual:@"AzaharShaderJIT"] || [key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
     if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"1", @"2", @"4", @"6"];
     if ([key isEqual:@"AzaharSoftwareRasterizer"]) return @[@"optimized", @"reference"];
@@ -36,7 +37,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
 NSString *AZChoiceTitle(NSString *key, NSString *v) {
     if ([key isEqual:@"AzaharSoftwareThreads"] && ![v isEqual:@"auto"])
         return [NSString stringWithFormat:@"%@ threads", v];
-    return @{@"combined":@"Automatic (128 MiB Fastmem)", @"custom":@"Advanced settings",
+    return @{@"combined":@"Automatic (SUPER JIT)", @"custom":@"Advanced settings",
              @"on":@"On", @"off":@"Off", @"enabled":@"Enabled", @"disabled":@"Disabled",
              @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
              @"fast":@"Fast dispatch", @"fastmem":@"128 MiB + True Fastmem",
@@ -44,7 +45,7 @@ NSString *AZChoiceTitle(NSString *key, NSString *v) {
              @"hyperfp":@"Hyper JIT + relaxed FP (highest risk)", @"turbo":@"Turbo JIT (experimental)",
              @"direct":@"Turbo + Direct RAM (high risk)",
              @"auto":@"Automatic", @"Software":@"Software (safe default)",
-             @"optimized":@"Optimized (experimental)", @"reference":@"Reference (previous path)",
+             @"optimized":@"SUPER tiles + NEON", @"reference":@"Reference (previous path)",
              @"Vulkan":@"Vulkan via MoltenVK (experimental)",
              @"1":@"1× Native (400×240)", @"2":@"2× (800×480)",
              @"3":@"3× (1200×720)", @"4":@"4× (1600×960)",
@@ -63,7 +64,7 @@ NSString *AZValue(NSString *key, NSURL *game) {
     if ([key isEqual:@"AzaharJITPreset"]) {
         // Existing per-game tuning still takes precedence over the universal preset.
         if (game && (AZHasOverride(@"AzaharExperimentalJIT", game) ||
-                     AZHasOverride(@"AzaharJITSpeed", game))) return @"custom";
+                     AZHasOverride(@"AzaharJITSpeed", game) || AZHasOverride(@"AzaharShaderJIT", game))) return @"custom";
         NSString *saved = [defaults stringForKey:key];
         if ([AZChoices(key) containsObject:saved ?: @""]) return saved;
         if ([defaults objectForKey:@"AzaharExperimentalJIT"] || [defaults objectForKey:@"AzaharJITSpeed"])
@@ -81,8 +82,10 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
     if ([preset isEqual:@"combined"]) {
         values[@"AzaharExperimentalJIT"] = @"on";
         values[@"AzaharJITSpeed"] = @"fastmem";
+        values[@"AzaharShaderJIT"] = @"on";
     } else if ([preset isEqual:@"off"]) {
         values[@"AzaharExperimentalJIT"] = @"off";
+        values[@"AzaharShaderJIT"] = @"off";
     } else if (game && (AZHasOverride(@"AzaharJITPreset", game) ||
                         [NSUserDefaults.standardUserDefaults objectForKey:@"AzaharJITPreset"])) {
         NSString *universal = AZValue(@"AzaharJITPreset", nil);
@@ -90,7 +93,10 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
             values[@"AzaharExperimentalJIT"] = [universal isEqual:@"combined"] ? @"on" : @"off";
         if (!AZHasOverride(@"AzaharJITSpeed", game) && [universal isEqual:@"combined"])
             values[@"AzaharJITSpeed"] = @"fastmem";
+        if (!AZHasOverride(@"AzaharShaderJIT", game) && ![universal isEqual:@"custom"])
+            values[@"AzaharShaderJIT"] = [universal isEqual:@"combined"] ? @"on" : @"off";
     }
+    if (![values[@"AzaharExperimentalJIT"] isEqual:@"on"]) values[@"AzaharShaderJIT"] = @"off";
     return [values copy];
 }
 BOOL AZLaunchOptionsRequireRestart(NSDictionary<NSString *, NSString *> *before,
@@ -112,6 +118,7 @@ void AZSetValue(NSString *key, NSString *value, NSURL *game) {
         if (!value && [key isEqual:@"AzaharJITPreset"]) {
             [values removeObjectForKey:@"AzaharExperimentalJIT"];
             [values removeObjectForKey:@"AzaharJITSpeed"];
+            [values removeObjectForKey:@"AzaharShaderJIT"];
         }
         if (values.count) [defaults setObject:values forKey:GameKey(game)];
         else [defaults removeObjectForKey:GameKey(game)];

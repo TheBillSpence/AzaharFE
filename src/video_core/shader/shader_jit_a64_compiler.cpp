@@ -19,6 +19,7 @@
 #include "common/vector_math.h"
 #include "video_core/pica/shader_unit.h"
 #include "video_core/pica_types.h"
+#include "video_core/shader/ios_shader_code_pool.h"
 #include "video_core/shader/shader_jit_a64_compiler.h"
 
 using namespace Common::A64;
@@ -989,7 +990,11 @@ void JitShader::FindReturnOffsets() {
 }
 
 void JitShader::Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_code_,
-                        const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data_) {
+                        const std::array<u32, MAX_SWIZZLE_DATA_LENGTH>* swizzle_data_
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+                        , IOSShaderCodePool* pool
+#endif
+) {
     program_code = program_code_;
     swizzle_data = swizzle_data_;
 
@@ -1047,18 +1052,31 @@ void JitShader::Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_
     // Copy to executable memory
     const size_t code_size = code_vec.size() * sizeof(u32);
 
-    code_mem = std::make_unique<oaknut::CodeBlock>(code_size);
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    if (pool) {
+        auto slice = pool->Allocate(code_size);
+        code_mem = std::move(slice.block);
+        code_offset = slice.offset;
+    } else {
+        const auto rounded = (code_size + 16383) & ~std::size_t{16383};
+        code_mem = std::make_shared<oaknut::CodeBlock>(rounded);
+    }
+    auto* rx = reinterpret_cast<std::byte*>(code_mem->ptr()) + code_offset;
+    auto* rw = reinterpret_cast<std::byte*>(code_mem->wptr()) + code_offset;
     code_mem->unprotect();
-
+    std::memcpy(rw, code_vec.data(), code_size);
+    code_mem->protect();
+    code_mem->invalidate(reinterpret_cast<u32*>(rx), code_size);
+    program = reinterpret_cast<CompiledShader*>(rx + program_offset);
+#else
+    code_mem = std::make_shared<oaknut::CodeBlock>(code_size);
+    code_mem->unprotect();
     program = reinterpret_cast<CompiledShader*>(reinterpret_cast<std::byte*>(code_mem->ptr()) +
                                                 program_offset);
-
-    // Copy to executable memory
-    std::memcpy(code_mem->ptr(), code_vec.data(), code_vec.size() * sizeof(u32));
-
-    // Memory is ready to execute
+    std::memcpy(code_mem->ptr(), code_vec.data(), code_size);
     code_mem->protect();
     code_mem->invalidate_all();
+#endif
 
     // code_vec is no longer needed
     code_vec.clear();

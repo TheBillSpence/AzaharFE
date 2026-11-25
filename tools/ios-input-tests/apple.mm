@@ -7,6 +7,7 @@ int main() {
         NSURL *game = [NSURL fileURLWithPath:@"/Ocarina.3ds"];
         assert([AZLaunchOptions(game)[@"AzaharJITPreset"] isEqual:@"combined"]);
         assert([AZLaunchOptions(game)[@"AzaharJITSpeed"] isEqual:@"fastmem"]);
+        assert([AZLaunchOptions(game)[@"AzaharShaderJIT"] isEqual:@"on"]);
         assert([AZChoices(@"AzaharJITSpeed") containsObject:@"hyperfp"]);
         assert([AZLaunchOptions(game)[@"citra_use_disk_shader_cache"] isEqual:@"enabled"]);
         assert([AZLaunchOptions(game)[@"AzaharAsyncShaders"] isEqual:@"off"]);
@@ -26,6 +27,8 @@ int main() {
         AZSetValue(@"AzaharJITPreset", @"combined", game);
         assert([AZLaunchOptions(game)[@"AzaharExperimentalJIT"] isEqual:@"on"]);
         assert([AZLaunchOptions(nil)[@"AzaharExperimentalJIT"] isEqual:@"off"]);
+        assert([AZLaunchOptions(nil)[@"AzaharShaderJIT"] isEqual:@"off"]);
+        assert([AZLaunchOptions(game)[@"AzaharShaderJIT"] isEqual:@"on"]);
         AZResetGameOptions(game);
         NSDictionary *before = AZLaunchOptions(game);
         assert(!AZLaunchOptionsRequireRestart(before, [before copy]));

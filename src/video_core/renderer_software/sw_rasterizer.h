@@ -12,6 +12,7 @@
 #include "video_core/renderer_software/sw_clipper.h"
 #include "video_core/renderer_software/sw_framebuffer.h"
 #include "video_core/renderer_software/sw_raster_work.h"
+#include "video_core/renderer_software/ios_fragment_jit.h"
 
 namespace Pica {
 struct RegsInternal;
@@ -76,6 +77,9 @@ private:
     std::unique_ptr<Common::ThreadWorker> sw_workers;
     std::unique_ptr<RasterWorkGroup> raster_group;
     Framebuffer fb;
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    std::unique_ptr<IOSFragmentJit> fragment_jit;
+#endif
 };
 
 } // namespace SwRenderer

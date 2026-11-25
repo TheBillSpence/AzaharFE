@@ -73,7 +73,7 @@
     if (section == 1)
         return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
                  @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache"];
-    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders"];
+    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders"];
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -191,10 +191,11 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
+        message:[key isEqual:@"AzaharShaderJIT"] ? @"Experimental native ARM64 vertex shader compiler plus restricted software fragment compiler. Requires CPU JIT permission; unsupported fragment states use the reference combiner. Reopen the game to apply." :
+                [key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
                 [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
                 [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
-                [key isEqual:@"AzaharJITPreset"] ? @"Automatic uses a 128 MiB primary JIT, 32 MiB secondary JITs and experimental 4 GiB guarded fastmem. Falls back to page-table access if the alias window cannot be reserved. Choose Hyper JIT or Fast dispatch to compare." :
+                [key isEqual:@"AzaharJITPreset"] ? @"SUPER Automatic combines guarded Fastmem, CPU JIT and both shader JIT paths. Optimized software rendering adds tiles and NEON; graphics API remains separately selectable. This branch is highly experimental." :
                 [key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
                 ([key isEqual:@"AzaharJITSpeed"] ? @"Hyper and Fastmem use a 128 MiB primary cache, 32 MiB secondary caches and full scheduler slices. Fastmem maps eligible RAM into a guest-address window; relaxed FP also reduces numerical accuracy. Experimental; back up saves and relaunch." :
                  ([key isEqual:@"AzaharDeepProfile"] ? @"Opt in to 5-second timing reports for CPU, JIT, HLE, PICA, software rasterization, and audio, without running an extra synthetic JIT. Profiling itself costs CPU time. Restart to apply." :
@@ -207,11 +208,12 @@
     }]];
     for (NSString *value in AZChoices(key)) {
         [menu addAction:[UIAlertAction actionWithTitle:AZChoiceTitle(key, value) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            BOOL individual = [key isEqual:@"AzaharExperimentalJIT"] || [key isEqual:@"AzaharJITSpeed"];
+            BOOL individual = [key isEqual:@"AzaharExperimentalJIT"] || [key isEqual:@"AzaharJITSpeed"] || [key isEqual:@"AzaharShaderJIT"];
             BOOL customize = individual || ([key isEqual:@"AzaharJITPreset"] && [value isEqual:@"custom"]);
             if (customize && ![AZValue(@"AzaharJITPreset",url) isEqual:@"custom"]) {
                 NSDictionary *current = AZLaunchOptions(url);
                 AZSetValue(@"AzaharExperimentalJIT", current[@"AzaharExperimentalJIT"], url);
+                AZSetValue(@"AzaharShaderJIT", current[@"AzaharShaderJIT"], url);
                 AZSetValue(@"AzaharJITSpeed", current[@"AzaharJITSpeed"], url);
                 AZSetValue(@"AzaharJITPreset", @"custom", url);
             }

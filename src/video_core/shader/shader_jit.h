@@ -15,6 +15,9 @@
 namespace Pica::Shader {
 
 class JitShader;
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+class IOSShaderCodePool;
+#endif
 
 class JitEngine final : public ShaderEngine {
 public:
@@ -26,6 +29,9 @@ public:
 
 private:
     std::unordered_map<u64, std::unique_ptr<JitShader>> cache;
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    std::unique_ptr<IOSShaderCodePool> code_pool;
+#endif
 };
 
 } // namespace Pica::Shader

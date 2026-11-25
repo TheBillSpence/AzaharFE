@@ -20,7 +20,7 @@ targets:
       - sdk: ImageIO.framework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios.jitexperiment
+        PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios.superexperimental
         PRODUCT_NAME: AzaharIOS
         INFOPLIST_FILE: AzaharIOS/Info.plist
         GENERATE_INFOPLIST_FILE: NO

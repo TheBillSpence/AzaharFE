@@ -991,7 +991,9 @@ static void ParseGraphicsOptions(void) {
                                                              config::enabled) == config::enabled;
 
     Settings::values.use_shader_jit =
-#ifdef IOS
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL)
+        LibRetro::CanUseJIT() && LibRetro::FetchVariable("AzaharShaderJIT", "off") == "on";
+#elif defined(IOS)
         false;
 #else
         LibRetro::FetchVariable(config::graphics::use_shader_jit, config::enabled) ==

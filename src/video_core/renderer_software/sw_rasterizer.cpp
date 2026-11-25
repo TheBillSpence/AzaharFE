@@ -3,6 +3,9 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include <algorithm>
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #include <boost/container/static_vector.hpp>
 #include "common/logging/log.h"
 #ifdef IOS
@@ -134,6 +137,13 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
         LibRetro::FetchVariable("AzaharSoftwareRasterizer", "optimized") != "reference";
     LibRetro::DisplayMessage(optimize_rasterization ? "SW27 rasterizer=workgroup-v2"
                                                     : "SW27 rasterizer=reference");
+#endif
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    if (optimize_rasterization && LibRetro::CanUseJIT() &&
+        LibRetro::FetchVariable("AzaharShaderJIT", "off") == "on") {
+        fragment_jit = std::make_unique<IOSFragmentJit>();
+        LibRetro::DisplayMessage("SUPER27 fragment JIT: restricted Replace/Modulate compiler");
+    }
 #endif
     if (optimize_rasterization) {
         raster_group = std::make_unique<RasterWorkGroup>(num_sw_threads);
@@ -343,6 +353,10 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
     const auto textures = regs.texturing.GetTextures();
     const auto tev_stages = regs.texturing.GetTevStages();
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    // Compile before publishing worker tasks; all workers only execute immutable code.
+    const auto* native_fragment = fragment_jit ? fragment_jit->Get(tev_stages) : nullptr;
+#endif
     std::array<bool, 3> use_uv{true, true, true};
     if (optimize_rasterization) {
         use_uv = {textures[0].enabled != 0, textures[1].enabled != 0, false};
@@ -408,18 +422,34 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         return true;
     };
 
-    const auto process_scanline = [&](u16 y) {
+    const auto process_span = [&](u16 y, u16 first_x, u16 end_x) {
         const auto edge = [&](unsigned a, unsigned b, int bias) {
             return incremental ? ScanlineEdge::Make(vtxpos[a].x, vtxpos[a].y, vtxpos[b].x,
-                                                    vtxpos[b].y, min_x + 8, y, bias)
+                                                    vtxpos[b].y, first_x, y, bias)
                                : ScanlineEdge{};
         };
         const auto e0 = edge(1, 2, bias0);
         const auto e1 = edge(2, 0, bias1);
         const auto e2 = edge(0, 1, bias2);
         s32 ew0 = e0.first, ew1 = e1.first, ew2 = e2.first;
-        for (u16 x = min_x + 8; x < max_x;
+        for (u16 x = first_x; x < end_x;
              x += 0x10, ew0 += e0.step, ew1 += e1.step, ew2 += e2.step) {
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+            // Exact four-pixel coverage rejection. Do not alter barycentric precision.
+            if (incremental && ((x - first_x) & 63) == 0 && x + 48 < end_x) {
+                const auto lane = (int32x4_t){0, 1, 2, 3};
+                const auto a = vmlaq_n_s32(vdupq_n_s32(ew0), lane, e0.step);
+                const auto b = vmlaq_n_s32(vdupq_n_s32(ew1), lane, e1.step);
+                const auto c = vmlaq_n_s32(vdupq_n_s32(ew2), lane, e2.step);
+                if (vmaxvq_s32(vminq_s32(vminq_s32(a, b), c)) < 0) {
+                    x += 48;
+                    ew0 += 3 * e0.step;
+                    ew1 += 3 * e1.step;
+                    ew2 += 3 * e2.step;
+                    continue;
+                }
+            }
+#endif
             // Do not process the pixel if it's inside the scissor box and the scissor mode is
             // set to Exclude.
             if (exclude_scissor) {
@@ -555,8 +585,17 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             }
 
             // Write the TEV stages.
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+            auto combiner_output = native_fragment
+                                       ? IOSFragmentJit::Run(*native_fragment, primary_color,
+                                                             primary_fragment_color,
+                                                             secondary_fragment_color, texture_color)
+                                       : WriteTevConfig(texture_color, tev_stages, primary_color,
+                                                        primary_fragment_color, secondary_fragment_color);
+#else
             auto combiner_output = WriteTevConfig(texture_color, tev_stages, primary_color,
                                                   primary_fragment_color, secondary_fragment_color);
+#endif
 
             if (output_merger.fragment_operation_mode ==
                 FramebufferRegs::FragmentOperationMode::Shadow) {
@@ -594,6 +633,31 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         } else {
             AzaharProfile::sw_jobs += optimize_rasterization ? 1 : rows;
         }
+    }
+#endif
+    const auto process_scanline = [&](u16 y) {
+        process_span(y, min_x + 8, max_x);
+    };
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    // Per-primitive 8x8 tile traversal. Keep the primitive barrier: no deferred
+    // draw reordering or framebuffer/texture lifetime changes.
+    if (optimize_rasterization && incremental && !work.inline_work &&
+        output_merger.fragment_operation_mode == FramebufferRegs::FragmentOperationMode::Default) {
+        const std::size_t tile_columns = (columns + 7) / 8;
+        const std::size_t tile_rows = (rows + 7) / 8;
+        auto render_tile = [&](std::size_t index) {
+            const auto tx = index % tile_columns;
+            const auto ty = index / tile_columns;
+            const auto first = tx * 8;
+            const auto last = std::min(columns, first + 8);
+            for (auto row = ty * 8; row < std::min(rows, ty * 8 + 8); ++row) {
+                process_span(static_cast<u16>(min_y + 8 + row * 16),
+                             static_cast<u16>(min_x + 8 + first * 16),
+                             static_cast<u16>(min_x + last * 16));
+            }
+        };
+        raster_group->Run(tile_columns * tile_rows, render_tile);
+        return;
     }
 #endif
     if (work.inline_work) {

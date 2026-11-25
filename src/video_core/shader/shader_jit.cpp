@@ -9,6 +9,11 @@
 #include "common/hash.h"
 #include "common/microprofile.h"
 #include "video_core/shader/shader.h"
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+#include <new>
+#include "video_core/shader/ios_shader_code_pool.h"
+#include "video_core/shader/shader_interpreter.h"
+#endif
 #include "video_core/shader/shader_jit.h"
 #if CITRA_ARCH(arm64)
 #include "video_core/shader/shader_jit_a64_compiler.h"
@@ -19,7 +24,12 @@
 
 namespace Pica::Shader {
 
-JitEngine::JitEngine() = default;
+JitEngine::JitEngine()
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    : code_pool(std::make_unique<IOSShaderCodePool>())
+#endif
+{
+}
 JitEngine::~JitEngine() = default;
 
 void JitEngine::SetupBatch(ShaderSetup& setup, u32 entry_point) {
@@ -36,7 +46,20 @@ void JitEngine::SetupBatch(ShaderSetup& setup, u32 entry_point) {
         setup.cached_shader = iter->second.get();
     } else {
         auto shader = std::make_unique<JitShader>();
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+        try {
+            shader->Compile(&setup.GetProgramCode(), &setup.GetSwizzleData(), code_pool.get());
+            if (cache.empty()) {
+                LibRetro::DisplayMessage("SUPER27 native ARM64 vertex shader compiled");
+            }
+        } catch (const std::bad_alloc&) {
+            // Remember this failed program; use the interpreter instead of retrying a BRK each draw.
+            shader.reset();
+            LibRetro::DisplayMessage("SUPER27 shader allocation failed; using shader interpreter");
+        }
+#else
         shader->Compile(&setup.GetProgramCode(), &setup.GetSwizzleData());
+#endif
         setup.cached_shader = shader.get();
         cache.emplace_hint(iter, cache_key, std::move(shader));
     }
@@ -45,6 +68,12 @@ void JitEngine::SetupBatch(ShaderSetup& setup, u32 entry_point) {
 MICROPROFILE_DECLARE(GPU_Shader);
 
 void JitEngine::Run(const ShaderSetup& setup, ShaderUnit& state) const {
+#if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
+    if (!setup.cached_shader) {
+        InterpreterEngine{}.Run(setup, state);
+        return;
+    }
+#endif
     ASSERT(setup.cached_shader != nullptr);
 
     MICROPROFILE_SCOPE(GPU_Shader);
