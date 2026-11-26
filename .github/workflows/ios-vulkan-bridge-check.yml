@@ -2,7 +2,7 @@ name: AzaharFE MoltenVK Bridge Fast Compile
 on:
   workflow_dispatch:
   push:
-    branches: [ios-jit-experiment]
+    branches: [ios-jit-experiment, SUPER-EXPERIMENTAL]
     paths:
       - 'src/citra_libretro/**'
       - 'src/video_core/renderer_vulkan/**'

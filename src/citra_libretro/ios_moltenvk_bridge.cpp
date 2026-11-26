@@ -3,12 +3,14 @@
 //
 // First-stage MoltenVK frontend for Azahar's existing libretro Vulkan PICA200
 // renderer. The GPU renders into an offscreen Vulkan image; this bridge reads
-// it back to the existing UIImage UI. This is deliberately synchronous and
-// optimizes for correctness before zero-copy presentation.
+// it back to the existing UIImage UI. A bounded staging ring allows the CPU
+// to consume completed frames without waiting after every submission.
 #include "citra_libretro/ios_moltenvk_bridge.h"
 
 #if defined(IOS) && defined(ENABLE_VULKAN)
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -17,6 +19,22 @@
 #include "libretro_vulkan.h"
 
 namespace {
+struct StagingSlot {
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence copied = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize capacity = 0;
+    void* mapped = nullptr;
+    bool coherent = false;
+    bool pending = false;
+    std::uint64_t serial = 0;
+    unsigned width = 0;
+    unsigned height = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::chrono::steady_clock::time_point submitted{};
+};
+
 struct Context {
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
@@ -24,14 +42,13 @@ struct Context {
     VkQueue queue = VK_NULL_HANDLE;
     std::uint32_t queue_family = 0;
     VkCommandPool command_pool = VK_NULL_HANDLE;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    VkFence copied = VK_NULL_HANDLE;
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkDeviceSize capacity = 0;
-    bool coherent = false;
+    std::array<StagingSlot, 3> slots{};
+    std::uint64_t serial = 0;
     bool device_failed = false;
-    bool copy_pending = false;
+    bool delivered = false;
+    bool asynchronous = false;
+    unsigned width = 0;
+    unsigned height = 0;
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat image_format = VK_FORMAT_UNDEFINED;
@@ -82,7 +99,8 @@ std::uint32_t GetSyncMask(void*) {
 }
 
 void WaitSyncIndex(void*) {
-    // Each frame's CPU readback waits for the GPU before the next frame.
+    // Producer and staging copies are ordered on the same queue; the copy
+    // restores the image layout before subsequent rendering. No host wait here.
 }
 
 bool CreateStagingBuffer(VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& memory,
@@ -123,32 +141,35 @@ bool CreateStagingBuffer(VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& me
     return vkBindBufferMemory(state.device, buffer, memory, 0) == VK_SUCCESS;
 }
 
-void ReleaseStagingBuffer() {
-    vkDestroyBuffer(state.device, state.buffer, nullptr);
-    vkFreeMemory(state.device, state.memory, nullptr);
-    state.buffer = VK_NULL_HANDLE;
-    state.memory = VK_NULL_HANDLE;
-    state.capacity = 0;
+void ReleaseStagingBuffer(StagingSlot& slot) {
+    if (slot.mapped)
+        vkUnmapMemory(state.device, slot.memory);
+    vkDestroyBuffer(state.device, slot.buffer, nullptr);
+    vkFreeMemory(state.device, slot.memory, nullptr);
+    slot.buffer = VK_NULL_HANDLE;
+    slot.memory = VK_NULL_HANDLE;
+    slot.mapped = nullptr;
+    slot.capacity = 0;
 }
 
-bool EnsureStagingBuffer(VkDeviceSize size) {
-    if (state.capacity >= size)
+bool EnsureStagingBuffer(StagingSlot& slot, VkDeviceSize size) {
+    if (slot.capacity >= size)
         return true;
-    ReleaseStagingBuffer();
-    if (!CreateStagingBuffer(size, state.buffer, state.memory, state.coherent)) {
-        ReleaseStagingBuffer();
+    ReleaseStagingBuffer(slot);
+    if (!CreateStagingBuffer(size, slot.buffer, slot.memory, slot.coherent) ||
+        vkMapMemory(state.device, slot.memory, 0, VK_WHOLE_SIZE, 0, &slot.mapped) != VK_SUCCESS) {
+        ReleaseStagingBuffer(slot);
         return false;
     }
-    state.capacity = size;
+    slot.capacity = size;
     return true;
 }
 
-bool CopyOutput(unsigned width, unsigned height) {
-    const auto command = state.command;
+bool CopyOutput(StagingSlot& slot, unsigned width, unsigned height) {
+    const auto command = slot.command;
     if (vkResetCommandBuffer(command, 0) != VK_SUCCESS ||
-        vkResetFences(state.device, 1, &state.copied) != VK_SUCCESS)
+        vkResetFences(state.device, 1, &slot.copied) != VK_SUCCESS)
         return false;
-    bool result = false;
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(command, &begin) == VK_SUCCESS) {
@@ -171,14 +192,14 @@ bool CopyOutput(unsigned width, unsigned height) {
         copy.imageSubresource.layerCount = 1;
         copy.imageExtent = {width, height, 1};
         vkCmdCopyImageToBuffer(command, state.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               state.buffer, 1, &copy);
+                               slot.buffer, 1, &copy);
 
         VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        host.buffer = state.buffer;
+        host.buffer = slot.buffer;
         host.size = VK_WHOLE_SIZE;
         VkImageMemoryBarrier after = before;
         after.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -195,22 +216,46 @@ bool CopyOutput(unsigned width, unsigned height) {
             submit.pCommandBuffers = &command;
             {
                 std::lock_guard lock{state.queue_mutex};
-                if (vkQueueSubmit(state.queue, 1, &submit, state.copied) != VK_SUCCESS) {
+                if (vkQueueSubmit(state.queue, 1, &submit, slot.copied) != VK_SUCCESS) {
                     state.device_failed = true;
                     return false;
                 }
             }
-            state.copy_pending = true;
-            // A driver stall must not trap the frame loop in an infinite fence wait.
-            constexpr std::uint64_t kReadbackTimeoutNs = 2'000'000'000ULL;
-            const auto waited =
-                vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, kReadbackTimeoutNs);
-            result = waited == VK_SUCCESS;
-            state.copy_pending = waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST;
-            state.device_failed = !result;
+            slot.pending = true;
+            slot.serial = ++state.serial;
+            slot.width = width;
+            slot.height = height;
+            slot.format = state.image_format;
+            slot.submitted = std::chrono::steady_clock::now();
+            return true;
         }
     }
-    return result;
+    return false;
+}
+
+bool WaitCopy(StagingSlot& slot, std::uint64_t timeout) {
+    const auto result = vkWaitForFences(state.device, 1, &slot.copied, VK_TRUE, timeout);
+    if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST)
+        slot.pending = false;
+    if (result != VK_SUCCESS)
+        state.device_failed = true;
+    return result == VK_SUCCESS;
+}
+
+bool ReadPixels(StagingSlot& slot, const void** pixels, std::size_t* pitch, bool* rgba) {
+    if (!slot.coherent) {
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = slot.memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        if (vkInvalidateMappedMemoryRanges(state.device, 1, &range) != VK_SUCCESS)
+            return false;
+    }
+    *pixels = slot.mapped;
+    *pitch = static_cast<std::size_t>(slot.width) * 4;
+    *rgba = slot.format == VK_FORMAT_R8G8B8A8_UNORM;
+    state.delivered = true;
+    return true;
 }
 } // namespace
 
@@ -275,10 +320,12 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
     VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if (vkAllocateCommandBuffers(state.device, &alloc, &state.command) != VK_SUCCESS ||
-        vkCreateFence(state.device, &fence, nullptr, &state.copied) != VK_SUCCESS) {
-        azahar_ios_vk_shutdown();
-        return false;
+    for (auto& slot : state.slots) {
+        if (vkAllocateCommandBuffers(state.device, &alloc, &slot.command) != VK_SUCCESS ||
+            vkCreateFence(state.device, &fence, nullptr, &slot.copied) != VK_SUCCESS) {
+            azahar_ios_vk_shutdown();
+            return false;
+        }
     }
 
     auto& intf = state.interface;
@@ -305,44 +352,84 @@ extern "C" const void* azahar_ios_vk_get_interface() {
     return state.device ? &state.interface : nullptr;
 }
 
-extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const void** pixels,
-                                       std::size_t* pitch) {
-    if (!pixels || !pitch || !state.device || !state.image || width == 0 || height == 0 ||
-        width > 4096 || height > 4096 ||
+extern "C" int azahar_ios_vk_readback_frame(unsigned width, unsigned height, const void** pixels,
+                                           std::size_t* pitch, bool* rgba, bool asynchronous) {
+    if (!pixels || !pitch || !rgba || !state.device || !state.image || state.device_failed ||
+        width == 0 || height == 0 || width > 4096 || height > 4096 ||
         (state.image_format != VK_FORMAT_R8G8B8A8_UNORM &&
          state.image_format != VK_FORMAT_B8G8R8A8_UNORM))
-        return false;
-
-    const auto byte_count = static_cast<VkDeviceSize>(width) * height * 4;
-    bool okay =
-        !state.device_failed && EnsureStagingBuffer(byte_count) && CopyOutput(width, height);
-    if (okay) {
-        state.pixels.resize(static_cast<std::size_t>(byte_count));
-        void* mapped = nullptr;
-        okay = vkMapMemory(state.device, state.memory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
-        if (okay) {
-            if (!state.coherent) {
-                VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-                range.memory = state.memory;
-                range.offset = 0;
-                range.size = VK_WHOLE_SIZE;
-                okay = vkInvalidateMappedMemoryRanges(state.device, 1, &range) == VK_SUCCESS;
+        return -1;
+    *pixels = nullptr;
+    // Drain before changing dimensions or switching modes. No old-size frame
+    // may escape with the current callback's geometry.
+    if (state.width != width || state.height != height || state.asynchronous != asynchronous) {
+        if (!azahar_ios_vk_drain_readback())
+            return -1;
+        state.width = width;
+        state.height = height;
+        state.asynchronous = asynchronous;
+        state.delivered = false;
+    }
+    const auto bytes = static_cast<VkDeviceSize>(width) * height * 4;
+    StagingSlot* ready = nullptr;
+    StagingSlot* free = nullptr;
+    for (auto& slot : state.slots) {
+        if (slot.pending) {
+            const auto status = vkGetFenceStatus(state.device, slot.copied);
+            if (status == VK_SUCCESS) {
+                slot.pending = false;
+                if (!ready || slot.serial > ready->serial)
+                    ready = &slot;
+            } else if (status != VK_NOT_READY ||
+                       std::chrono::steady_clock::now() - slot.submitted >
+                           std::chrono::seconds(2)) {
+                state.device_failed = true;
+                return -1;
             }
-            if (okay) {
-                std::memcpy(state.pixels.data(), mapped, state.pixels.size());
-                // UIImage's existing XRGB8888 path consumes little-endian
-                // BGRA bytes. Azahar Vulkan outputs RGBA8, so swap R and B.
-                if (state.image_format == VK_FORMAT_R8G8B8A8_UNORM) {
-                    for (std::size_t i = 0; i < state.pixels.size(); i += 4)
-                        std::swap(state.pixels[i], state.pixels[i + 2]);
-                }
-                *pixels = state.pixels.data();
-                *pitch = static_cast<std::size_t>(width) * 4;
-            }
-            vkUnmapMemory(state.device, state.memory);
         }
     }
-    return okay;
+    // Do not overwrite the slot returned to the caller. Its pointer is valid
+    // until the next readback call (the frontend immediately copies it).
+    for (auto& slot : state.slots) {
+        if (!slot.pending && &slot != ready) {
+            free = &slot;
+            break;
+        }
+    }
+    if (!free) {
+        // All slots busy: retain the previous displayed image, not a failure.
+        return ready ? (ReadPixels(*ready, pixels, pitch, rgba) ? 1 : -1) : 0;
+    }
+    if (!EnsureStagingBuffer(*free, bytes) || !CopyOutput(*free, width, height)) {
+        state.device_failed = true;
+        return -1;
+    }
+    // First frame and compatibility mode keep the bounded blocking path.
+    if (!asynchronous || !state.delivered) {
+        if (!WaitCopy(*free, 2'000'000'000ULL))
+            return -1;
+        ready = free;
+    }
+    return ready ? (ReadPixels(*ready, pixels, pitch, rgba) ? 1 : -1) : 0;
+}
+
+extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const void** pixels,
+                                       std::size_t* pitch) {
+    bool rgba = false;
+    const void* raw = nullptr;
+    if (!pixels || azahar_ios_vk_readback_frame(width, height, &raw, pitch, &rgba, false) != 1)
+        return false;
+    // Preserve the legacy BGRA ABI for older frontends and regression tests.
+    if (rgba) {
+        state.pixels.resize(*pitch * height);
+        std::memcpy(state.pixels.data(), raw, state.pixels.size());
+        for (std::size_t i = 0; i < state.pixels.size(); i += 4)
+            std::swap(state.pixels[i], state.pixels[i + 2]);
+        *pixels = state.pixels.data();
+    } else {
+        *pixels = raw;
+    }
+    return true;
 }
 
 extern "C" bool azahar_ios_vk_readback_failed() {
@@ -350,34 +437,37 @@ extern "C" bool azahar_ios_vk_readback_failed() {
 }
 
 extern "C" bool azahar_ios_vk_drain_readback() {
-    if (!state.copy_pending)
-        return true;
-    // Do not reset the fence, release staging RAM or destroy the source image
-    // until the pending submission completes or the device is declared lost.
-    const auto result = vkWaitForFences(state.device, 1, &state.copied, VK_TRUE, 1'000'000'000ULL);
-    if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) {
-        state.copy_pending = false;
-        return true;
+    for (auto& slot : state.slots) {
+        if (!slot.pending)
+            continue;
+        const auto result = vkWaitForFences(state.device, 1, &slot.copied, VK_TRUE, 1'000'000'000ULL);
+        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST)
+            return false;
+        slot.pending = false;
     }
-    return false;
+    return true;
 }
 
 extern "C" void azahar_ios_vk_shutdown() {
     if (state.device) {
         std::lock_guard lock{state.queue_mutex};
         vkDeviceWaitIdle(state.device);
-        ReleaseStagingBuffer();
-        vkDestroyFence(state.device, state.copied, nullptr);
+        for (auto& slot : state.slots) {
+            ReleaseStagingBuffer(slot);
+            vkDestroyFence(state.device, slot.copied, nullptr);
+        }
         if (state.command_pool)
             vkDestroyCommandPool(state.device, state.command_pool, nullptr);
         vkDestroyDevice(state.device, nullptr);
     }
     if (state.instance)
         vkDestroyInstance(state.instance, nullptr);
-    state.command = VK_NULL_HANDLE;
-    state.copied = VK_NULL_HANDLE;
+    state.slots = {};
+    state.serial = 0;
     state.device_failed = false;
-    state.copy_pending = false;
+    state.delivered = false;
+    state.asynchronous = false;
+    state.width = state.height = 0;
     state.command_pool = VK_NULL_HANDLE;
     state.device = VK_NULL_HANDLE;
     state.instance = VK_NULL_HANDLE;

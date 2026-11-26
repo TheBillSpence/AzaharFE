@@ -137,6 +137,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_start) _vkStart;
     decltype(&azahar_ios_vk_get_interface) _vkGetInterface;
     decltype(&azahar_ios_vk_readback) _vkReadback;
+    decltype(&azahar_ios_vk_readback_frame) _vkReadbackFrame;
+    unsigned _readbackPending;
     decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
     decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
@@ -285,6 +287,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _vkStart = nullptr;
     _vkGetInterface = nullptr;
     _vkReadback = nullptr;
+    _vkReadbackFrame = nullptr;
     _vkReadbackFailed = nullptr;
     _vkDrainReadback = nullptr;
     _vkShutdown = nullptr;
@@ -519,6 +522,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_get_interface"));
         _vkReadback = reinterpret_cast<decltype(_vkReadback)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback"));
+        _vkReadbackFrame = reinterpret_cast<decltype(_vkReadbackFrame)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_readback_frame"));
         _vkReadbackFailed = reinterpret_cast<decltype(_vkReadbackFailed)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback_failed"));
         _vkDrainReadback = reinterpret_cast<decltype(_vkDrainReadback)>(
@@ -676,6 +681,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     auto performanceWindow = nextFrame;
     unsigned emulatedFrames = 0;
     _readbackAttempts = 0;
+    _readbackPending = 0;
     _readbackMilliseconds = 0;
     double coreRunMilliseconds = 0.0;
     uint64_t previousImages = 0;
@@ -703,6 +709,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             frameCount = emulatedFrames = 0;
             coreRunMilliseconds = 0;
             _readbackAttempts = 0;
+            _readbackPending = 0;
             _readbackMilliseconds = 0;
             previousImages = _deliveredImages.load();
         }
@@ -742,10 +749,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     coreRunMilliseconds / emulatedFrames]];
                 if (_readbackAttempts) {
                     [self writeDiagnostic:[NSString stringWithFormat:
-                        @"MoltenVK readback: %u copies, mean %.2f ms per copy",
-                        _readbackAttempts, _readbackMilliseconds / _readbackAttempts]];
+                        @"MoltenVK readback: %u calls, %u pending, mean %.2f ms per call",
+                        _readbackAttempts, _readbackPending, _readbackMilliseconds / _readbackAttempts]];
                 }
                 _readbackAttempts = 0;
+                _readbackPending = 0;
                 _readbackMilliseconds = 0;
                 performanceWindow = now;
                 emulatedFrames = 0;
@@ -901,14 +909,26 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
         _stopping.load() || _paused.load() || _frameQueued.exchange(true)) return;
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
+    bool rgba = false;
     if (hardware) {
         const auto started = std::chrono::steady_clock::now();
         const void *gpuPixels = nullptr;
-        bool copied = _vkReadback && _vkInterface && _vkReadback(width, height, &gpuPixels, &pitch);
+        int status = -1;
+        if (_vkInterface && _vkReadbackFrame) {
+            const bool async = ![self.launchOptions[@"AzaharVulkanReadback"] isEqual:@"sync"];
+            status = _vkReadbackFrame(width, height, &gpuPixels, &pitch, &rgba, async);
+        } else if (_vkReadback && _vkInterface) {
+            status = _vkReadback(width, height, &gpuPixels, &pitch) ? 1 : -1;
+        }
         ++_readbackAttempts;
         _readbackMilliseconds += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - started).count();
-        data = copied ? gpuPixels : nullptr;
+        if (status == 0) {
+            ++_readbackPending;
+            _frameQueued.store(false);
+            return;
+        }
+        data = status == 1 ? gpuPixels : nullptr;
     }
     if (!data || pitch < width * 4 || pitch > 4096 * 4) {
         if (hardware) {
@@ -936,7 +956,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
         CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
         CGImageRef frame = CGImageCreate(width, height, 8, 32, pitch,
-            colors, kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst,
+            colors, rgba ? (kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast)
+                         : (kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst),
             provider, NULL, false, kCGRenderingIntentDefault);
         if (frame) {
             UIImage *image = [UIImage imageWithCGImage:frame];

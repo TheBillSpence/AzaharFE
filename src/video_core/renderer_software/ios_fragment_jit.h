@@ -333,12 +333,12 @@ private:
             const auto color_op = s.color_op.Value();
             const bool dot = color_op == Operation::Dot3_RGB || color_op == Operation::Dot3_RGBA;
             const auto packed_source = ColorSource(s, i, 0);
-            const bool packed_replace =
-                color_op == Operation::Replace && s.alpha_op == Operation::Replace &&
-                packed_source == AlphaSource(s, 0) &&
-                s.color_modifier1 == Stage::ColorModifier::SourceColor &&
-                s.alpha_modifier1 == Stage::AlphaModifier::SourceAlpha &&
-                s.GetColorMultiplier() == 1 && s.GetAlphaMultiplier() == 1;
+            const bool packed_replace = color_op == Operation::Replace &&
+                                        s.alpha_op == Operation::Replace &&
+                                        packed_source == AlphaSource(s, 0) &&
+                                        s.color_modifier1 == Stage::ColorModifier::SourceColor &&
+                                        s.alpha_modifier1 == Stage::AlphaModifier::SourceAlpha &&
+                                        s.GetColorMultiplier() == 1 && s.GetAlphaMultiplier() == 1;
             if (packed_replace) {
                 if (packed_source != Source::Previous) {
                     load(W2, packed_source, i);

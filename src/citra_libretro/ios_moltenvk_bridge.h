@@ -12,6 +12,11 @@ __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface()
 __attribute__((visibility("default"))) bool azahar_ios_vk_readback(unsigned width, unsigned height,
                                                                    const void** pixels,
                                                                    std::size_t* pitch);
+// 1: completed pixels, 0: no completed frame yet, -1: failure. Native byte order
+// is described by rgba; the returned pointer is valid until the next call.
+__attribute__((visibility("default"))) int azahar_ios_vk_readback_frame(
+    unsigned width, unsigned height, const void** pixels, std::size_t* pitch, bool* rgba,
+    bool asynchronous);
 // After an unsuccessful bounded wait, do not destroy a pending GPU copy.
 __attribute__((visibility("default"))) bool azahar_ios_vk_readback_failed();
 __attribute__((visibility("default"))) bool azahar_ios_vk_drain_readback();

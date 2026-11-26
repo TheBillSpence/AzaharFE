@@ -46,7 +46,7 @@ bool CreateDevice(retro_vulkan_context* ctx, VkInstance, VkPhysicalDevice gpu, V
     return false;
 }
 
-void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format) {
+void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format, bool async) {
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = format;
@@ -77,7 +77,7 @@ void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format) {
     size_t pitch = 0;
     vk.set_image(vk.handle, nullptr, 0, nullptr, vk.queue_index);
     Check(!azahar_ios_vk_readback(7, 5, &pixels, &pitch), "reject missing image");
-    for (unsigned pass = 0; pass < 3; ++pass) {
+    for (unsigned pass = 0; pass < (async ? 12u : 3u); ++pass) {
         VkCommandBufferAllocateInfo cmd_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         cmd_info.commandPool = pool;
         cmd_info.commandBufferCount = 1;
@@ -88,6 +88,7 @@ void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format) {
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout = pass ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
@@ -95,7 +96,7 @@ void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format) {
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
         VkClearColorValue clear{};
-        clear.float32[pass] = clear.float32[3] = 1;
+        clear.float32[pass % 3] = clear.float32[3] = 1;
         vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &barrier.subresourceRange);
         Check(vkEndCommandBuffer(cmd) == VK_SUCCESS, "end producer");
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -106,14 +107,34 @@ void CheckFrames(const retro_hw_render_interface_vulkan& vk, VkFormat format) {
         vk.unlock_queue(vk.handle);
         Check(result == VK_SUCCESS, "submit producer");
         vk.set_image(vk.handle, &frame, 0, nullptr, vk.queue_index);
-        const unsigned width = pass == 1 ? 7 : 3;
-        Check(azahar_ios_vk_readback(width, 5, &pixels, &pitch), "read frame");
+        const unsigned width = async ? (pass < 6 ? 3 : 7) : (pass == 1 ? 7 : 3);
+        unsigned expected_pass = pass;
+        bool rgba = false;
+        if (async) {
+            // Force previous copy completion for deterministic color comparisons.
+            // The production bridge itself still uses nonblocking fence polling.
+            Check(vkQueueWaitIdle(vk.queue) == VK_SUCCESS, "complete queued producer");
+            const int status =
+                azahar_ios_vk_readback_frame(width, 5, &pixels, &pitch, &rgba, true);
+            if (pass == 1 || pass == 7) {
+                Check(status == 0 && !pixels && !azahar_ios_vk_readback_failed(),
+                      "pending is not failure");
+                continue;
+            }
+            Check(status == 1, "pipelined frame");
+            Check(rgba == (format == VK_FORMAT_R8G8B8A8_UNORM), "native byte order");
+            if (pass != 0 && pass != 6)
+                expected_pass = pass - 1;
+        } else {
+            Check(azahar_ios_vk_readback(width, 5, &pixels, &pitch), "read frame");
+        }
         Check(pixels && pitch == width * 4, "geometry");
         std::array<uint8_t, 4> expected{0, 0, 0, 255};
-        expected[2 - pass] = 255;
+        expected[rgba ? expected_pass % 3 : 2 - expected_pass % 3] = 255;
         for (size_t i = 0; i < pitch * 5; ++i)
             Check(static_cast<const uint8_t*>(pixels)[i] == expected[i % 4], "ordered BGRA pixels");
     }
+    Check(azahar_ios_vk_drain_readback(), "drain pending copies");
     vk.set_image(vk.handle, nullptr, 0, nullptr, vk.queue_index);
     vkDestroyCommandPool(vk.device, pool, nullptr);
     vkDestroyImage(vk.device, image, nullptr);
@@ -137,9 +158,10 @@ int main() {
         Check(azahar_ios_vk_start(&setup), "start bridge");
         const auto* vk = static_cast<const retro_hw_render_interface_vulkan*>(azahar_ios_vk_get_interface());
         Check(vk != nullptr, "live interface");
-        CheckFrames(*vk, format);
+        CheckFrames(*vk, format, false);
+        CheckFrames(*vk, format, true);
         azahar_ios_vk_shutdown();
         Check(!azahar_ios_vk_get_interface(), "clean shutdown");
     }
-    std::puts("PASS two sessions, six ordered readbacks, rejection and recovery policy");
+    std::puts("PASS two sessions, synchronous and pipelined readbacks, resize and drain");
 }

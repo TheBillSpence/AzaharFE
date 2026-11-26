@@ -4,7 +4,7 @@ NSArray<NSString *> *AZOptionKeys(void) {
     return @[@"AzaharJITPreset", @"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile",
              @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"citra_graphics_api", @"citra_resolution_factor",
              @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache",
-             @"AzaharAsyncShaders"];
+             @"AzaharAsyncShaders", @"AzaharVulkanReadback"];
 }
 NSString *AZOptionTitle(NSString *key) {
     return @{@"AzaharJITPreset":@"JIT", @"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
@@ -17,7 +17,8 @@ NSString *AZOptionTitle(NSString *key) {
              @"citra_layout_option":@"Screen layout",
              @"citra_swap_screen":@"Primary screen",
              @"citra_use_disk_shader_cache":@"Shader precompilation / cache",
-             @"AzaharAsyncShaders":@"Async shader compilation"}[key];
+             @"AzaharAsyncShaders":@"Async shader compilation",
+             @"AzaharVulkanReadback":@"Vulkan framebuffer readback"}[key];
 }
 NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITPreset"]) return @[@"combined", @"off", @"custom"];
@@ -26,6 +27,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"fastmem", @"fastmemfp", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
     if ([key isEqual:@"AzaharShaderJIT"] || [key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
+    if ([key isEqual:@"AzaharVulkanReadback"]) return @[@"async", @"sync"];
     if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"1", @"2", @"4", @"6"];
     if ([key isEqual:@"AzaharSoftwareRasterizer"]) return @[@"optimized", @"reference"];
     // Safe default, per-game overrides require explicit experimental opt-in.
@@ -44,6 +46,7 @@ NSString *AZChoiceTitle(NSString *key, NSString *v) {
              @"fastmemfp":@"128 MiB + Fastmem + relaxed FP", @"hyper":@"Hyper JIT (page table)",
              @"hyperfp":@"Hyper JIT + relaxed FP (highest risk)", @"turbo":@"Turbo JIT (experimental)",
              @"direct":@"Turbo + Direct RAM (high risk)",
+             @"async":@"Pipelined (3 buffers)", @"sync":@"Synchronous (compatibility)",
              @"auto":@"Automatic", @"Software":@"Software (safe default)",
              @"optimized":@"SUPER tiles + NEON", @"reference":@"Reference (previous path)",
              @"Vulkan":@"Vulkan via MoltenVK (experimental)",

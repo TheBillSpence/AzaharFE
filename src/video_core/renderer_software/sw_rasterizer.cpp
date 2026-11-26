@@ -423,11 +423,10 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         regs.rasterizer.scissor_test.mode == RasterizerRegs::ScissorMode::Exclude;
     const bool w_buffer =
         regs.rasterizer.depthmap_enable == RasterizerRegs::DepthBuffering::WBuffering;
-    const bool needs_tc0_w =
-        !optimize_rasterization ||
-        (textures[0].enabled && textures[0].config.address != 0 &&
-         textures[0].config.type != TexturingRegs::TextureConfig::Texture2D &&
-         textures[0].config.type != TexturingRegs::TextureConfig::Disabled);
+    const bool needs_tc0_w = !optimize_rasterization ||
+                             (textures[0].enabled && textures[0].config.address != 0 &&
+                              textures[0].config.type != TexturingRegs::TextureConfig::Texture2D &&
+                              textures[0].config.type != TexturingRegs::TextureConfig::Disabled);
     const auto& output_merger = regs.framebuffer.output_merger;
     const bool color_write = regs.framebuffer.framebuffer.allow_color_write != 0;
     const auto& framebuffer = regs.framebuffer.framebuffer;
@@ -489,8 +488,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
              x += 0x10, ew0 += e0.step, ew1 += e1.step, ew2 += e2.step) {
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
             // Exact four-pixel coverage rejection. Do not alter barycentric precision.
-            if (incremental && (ew0 < 0 || ew1 < 0 || ew2 < 0) &&
-                ((x - first_x) & 63) == 0 && x + 48 < end_x) {
+            if (incremental && (ew0 < 0 || ew1 < 0 || ew2 < 0) && ((x - first_x) & 63) == 0 &&
+                x + 48 < end_x) {
                 const auto lane = (int32x4_t){0, 1, 2, 3};
                 const auto a = vmlaq_n_s32(vdupq_n_s32(ew0), lane, e0.step);
                 const auto b = vmlaq_n_s32(vdupq_n_s32(ew1), lane, e1.step);
@@ -531,7 +530,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
                 f24::FromFloat32(static_cast<f32>(w2)));
             f24 interpolated_w_inverse = f24::Zero();
             if (w_buffer || !optimize_rasterization) {
-                interpolated_w_inverse = f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
+                interpolated_w_inverse =
+                    f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
             }
 
             // interpolated_z = z / w
@@ -557,7 +557,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
                 continue;
             }
             if (!w_buffer && optimize_rasterization) {
-                interpolated_w_inverse = f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
+                interpolated_w_inverse =
+                    f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
             }
 
             /**
@@ -618,9 +619,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             }
 
             // Sample bound texture units.
-            const f24 tc0_w = needs_tc0_w
-                                  ? get_interpolated_attribute(v0.tc0_w, v1.tc0_w, v2.tc0_w)
-                                  : f24::Zero();
+            const f24 tc0_w = needs_tc0_w ? get_interpolated_attribute(v0.tc0_w, v1.tc0_w, v2.tc0_w)
+                                          : f24::Zero();
             const auto texture_color = TextureColor(uv, textures, tc0_w, prepared_textures);
 
             Common::Vec4<u8> primary_fragment_color = {0, 0, 0, 0};

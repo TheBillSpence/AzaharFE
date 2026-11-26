@@ -73,7 +73,7 @@
     if (section == 1)
         return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
                  @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache"];
-    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders"];
+    return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders", @"AzaharVulkanReadback"];
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -194,6 +194,7 @@
         message:[key isEqual:@"AzaharShaderJIT"] ? @"Experimental ARM64 vertex shader and full TEV fragment combiner compiler. Requires CPU JIT permission; invalid states or failed native validation use the reference combiner. Reopen the game to apply." :
                 [key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
                 [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :
+                [key isEqual:@"AzaharVulkanReadback"] ? @"Pipelined readback polls three persistent staging buffers instead of blocking each frame. Synchronous preserves the compatibility path. Reopen the game to apply." :
                 [key isEqual:@"AzaharAsyncShaders"] ? @"Experimental Vulkan-only background shader compilation. It can reduce stalls but may temporarily omit graphics. Off is recommended for stability." :
                 [key isEqual:@"AzaharJITPreset"] ? @"SUPER Automatic combines guarded Fastmem, CPU JIT and both shader JIT paths. Optimized software rendering adds tiles and NEON; graphics API remains separately selectable. This branch is highly experimental." :
                 [key isEqual:@"AzaharExperimentalJIT"] ? @"On iOS 27, attach StikDebug with universal.js before launching with JIT." :
