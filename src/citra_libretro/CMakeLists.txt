@@ -94,6 +94,10 @@ endif()
 if(IOS)
   target_compile_definitions(citra_libretro_common PRIVATE IOS)
   target_compile_definitions(citra_libretro PRIVATE IOS)
+  # The experimental software rasterizer exposes Oaknut types through its headers.
+  if("arm64" IN_LIST ARCHITECTURE)
+    target_link_libraries(citra_libretro PRIVATE oaknut)
+  endif()
   target_link_libraries(citra_libretro PRIVATE "-framework CoreFoundation" "-framework Foundation")
 endif()
 
