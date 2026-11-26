@@ -350,10 +350,10 @@ bool CreateSwapchain(unsigned width, unsigned height) {
     if (static_cast<double>(state.extent.width) < width * 0.9 ||
         static_cast<double>(state.extent.height) < height * 0.9)
         return false;
-    state.present_filter = (src.optimalTilingFeatures &
-                            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
-                               ? VK_FILTER_LINEAR
-                               : VK_FILTER_NEAREST;
+    state.present_filter =
+        (src.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
+            ? VK_FILTER_LINEAR
+            : VK_FILTER_NEAREST;
     const uint32_t image_count = std::max(3u, caps.minImageCount);
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     info.surface = state.surface;

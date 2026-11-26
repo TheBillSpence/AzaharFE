@@ -2,6 +2,7 @@
 #import "AZPreferences.h"
 #import "AZAudioOutput.h"
 #import <QuartzCore/CAMetalLayer.h>
+#import "AZDisplayGeometry.h"
 #include <algorithm>
 
 #import <Foundation/Foundation.h>
@@ -149,6 +150,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     bool _metalActive;
     unsigned _metalPending, _metalAttempts, _metalSubmitted, _metalWidth, _metalHeight;
     CGSize _metalDisplaySize;
+    BOOL _displayLandscape;
+    NSDictionary *_displayOptions;
     decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
     decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
@@ -249,8 +252,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (NSDictionary<NSString *, NSString *> *)launchOptions { @synchronized (self) { return _gameOptions; } }
 
 - (BOOL)jitActive { return _jitEnabled; }
-- (void)setMetalDisplaySize:(CGSize)size {
-    @synchronized (self) { _metalDisplaySize = size; }
+- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options {
+    @synchronized (self) {
+        _metalDisplaySize = size;
+        _displayLandscape = landscape;
+        _displayOptions = [options copy];
+    }
 }
 
 // Persist each stage before risky JIT debugger operations, because a stalled
@@ -945,16 +952,28 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
     if (hardware && _metalActive) {
         CGSize size;
-        @synchronized (self) { size = _metalDisplaySize; }
-        if (size.width >= 1 && size.height >= 1) {
-            // Match the existing UIImageView aspect-fit and original touchscreen mapping.
-            const double scale = std::min(size.width / width, size.height / height);
-            const double w = width * scale / size.width, h = height * scale / size.height;
-            const float rect[] = {0, 0, 1, 1, float((1-w)/2), float((1-h)/2),
-                                 float((1+w)/2), float((1+h)/2)};
+        BOOL landscape;
+        NSDictionary *options;
+        @synchronized (self) {
+            size = _metalDisplaySize;
+            landscape = _displayLandscape;
+            options = _displayOptions ?: _gameOptions;
+        }
+        const auto geometry = AZMakeDisplayGeometry(CGSizeMake(width,height), size, landscape, options);
+        if (geometry.count && size.width >= 1 && size.height >= 1) {
+            // Compute the same normalized layout as the CPU fallback and touch input.
+            float rect[16]{};
+            for (unsigned n=0; n<geometry.count; ++n) {
+                const CGRect src=geometry.source[n], dst=geometry.destination[n];
+                float *r=rect+n*8;
+                r[0]=CGRectGetMinX(src); r[1]=CGRectGetMinY(src);
+                r[2]=CGRectGetMaxX(src); r[3]=CGRectGetMaxY(src);
+                r[4]=CGRectGetMinX(dst)/size.width; r[5]=CGRectGetMinY(dst)/size.height;
+                r[6]=CGRectGetMaxX(dst)/size.width; r[7]=CGRectGetMaxY(dst)/size.height;
+            }
             ++_metalAttempts;
             const int result = _vkPresentFrame(width, height, (unsigned)std::lround(size.width),
-                                               (unsigned)std::lround(size.height), rect, 1);
+                                               (unsigned)std::lround(size.height), rect, geometry.count);
             if (_vkPresentExtent) {
                 unsigned surfaceWidth = 0, surfaceHeight = 0;
                 _vkPresentExtent(&surfaceWidth, &surfaceHeight);

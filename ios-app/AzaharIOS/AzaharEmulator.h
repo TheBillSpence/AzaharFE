@@ -19,7 +19,7 @@
 @property (nonatomic, readonly) BOOL jitActive;
 // Retain the layer throughout the worker/core lifetime. Main thread sets its size.
 @property (nonatomic, strong) CAMetalLayer *metalLayer;
-- (void)setMetalDisplaySize:(CGSize)size;
+- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options;
 
 + (NSString *)sessionJITStatus;
 + (BOOL)hasActiveSession;

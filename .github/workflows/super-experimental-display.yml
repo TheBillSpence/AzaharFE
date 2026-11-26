@@ -1,0 +1,274 @@
+name: SUPER-EXPERIMENTAL DISPLAY IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [SUPER-EXPERIMENTAL-DISPLAY]
+
+# Avoid spending scarce macOS runners compiling superseded iPhone builds.
+# Keep the newest commit running; manual builds on other refs remain separate.
+concurrency:
+  group: super-experimental-display-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios-frontend:
+    runs-on: macos-26-intel
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out Azahar
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch headers for the iPhone application shell
+        run: git submodule update --init --depth 1 externals/libretro-common
+
+      - name: Test controller mapping, touchscreen input and JIT presets
+        shell: bash
+        run: |
+          set -euo pipefail
+          includes=(-Iios-app/AzaharIOS -Iexternals/libretro-common/libretro-common/include)
+          xcrun clang++ -std=c++17 "${includes[@]}" tools/ios-input-tests/input.cpp -o "$RUNNER_TEMP/input-test"
+          "$RUNNER_TEMP/input-test"
+          xcrun clang -fobjc-arc -c ios-app/AzaharIOS/AZOptions.m -o "$RUNNER_TEMP/options.o"
+          xcrun clang++ -std=c++17 -fobjc-arc "${includes[@]}" tools/ios-input-tests/apple.mm \
+            "$RUNNER_TEMP/options.o" -framework Foundation -framework GameController -framework CoreGraphics -o "$RUNNER_TEMP/apple-input-test"
+          "$RUNNER_TEMP/apple-input-test"
+
+      - name: Test raster workgroup
+        run: |
+          xcrun clang++ -std=c++20 -O2 -pthread -Isrc tools/ios-video-tests/raster_work.cpp -o "$RUNNER_TEMP/raster-work"
+          "$RUNNER_TEMP/raster-work"
+
+      - name: Install build tools
+        run: brew install ninja xcodegen
+
+      - name: Show environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcodegen --version
+          cmake --version
+
+      - name: Prepare supplied AzaharFE lightning application icon
+        run: |
+          set -euo pipefail
+          source="ios-app/artwork/AzaharFE-lightning.webp"
+          icon="ios-app/AzaharIOS/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+          echo "6addf7ad0f0966a0c26aa1d99de5c30b14fca7588f31a7877476775695f4084f  $source" | shasum -a 256 -c -
+          mkdir -p "$(dirname "$icon")"
+          sips -s format png "$source" --out "$RUNNER_TEMP/AzaharFE-icon-source.png"
+          sips -z 1024 1024 "$RUNNER_TEMP/AzaharFE-icon-source.png" --out "$icon"
+          python3 - "$icon" <<'PY'
+          import struct
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          assert data[:8] == b"\x89PNG\r\n\x1a\n", "Not a PNG"
+          width, height, depth, color = struct.unpack(">IIBB", data[16:26])
+          assert (width, height) == (1024, 1024), "Incorrect icon size"
+          assert color == 2 and depth == 8, "Icon must be opaque RGB"
+          print("Verified supplied 1024x1024 RGB lightning icon")
+          PY
+
+      - name: Test stereo audio buffer
+        run: |
+          xcrun clang++ -std=c++17 -Iios-app/AzaharIOS tools/ios-input-tests/audio.cpp -o "$RUNNER_TEMP/audio-test"
+          "$RUNNER_TEMP/audio-test"
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          cd ios-app
+          xcodegen generate
+
+      - name: Build iPhone application shell
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios-app/AzaharIOS.xcodeproj \
+            -scheme AzaharIOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ios-app/.derived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Stamp build number for bottom-left version badge
+        run: |
+          set -euo pipefail
+          app="ios-app/.derived/Build/Products/Release-iphoneos/AzaharIOS.app"
+          test -f "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$app/Info.plist"
+          echo "Azahar iOS display experimental build ${GITHUB_RUN_NUMBER}"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$app/Info.plist"
+
+      - name: Fetch pinned submodules
+        env:
+          GIT_HTTP_LOW_SPEED_LIMIT: '1024'
+          GIT_HTTP_LOW_SPEED_TIME: '120'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git -c 'url.https://github.com/.insteadOf=git@github.com:' \
+            submodule update --init --recursive --depth 1 --jobs 4
+
+      - name: Patch LibreSSL syslog for iOS
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("externals/libressl/crypto/cryptlib.c")
+
+          if not path.exists():
+              raise SystemExit("ERROR: LibreSSL cryptlib.c was not found.")
+
+          text = path.read_text()
+
+          old = """\tstruct syslog_data sdata = SYSLOG_DATA_INIT;
+          \tva_list ap;
+
+          \tva_start(ap, fmta);
+          \tvsyslog_r(LOG_INFO|LOG_LOCAL2, &sdata, fmta, ap);
+          \tva_end(ap);"""
+
+          new = """\tva_list ap;
+
+          \tva_start(ap, fmta);
+          \tvsyslog(LOG_INFO|LOG_LOCAL2, fmta, ap);
+          \tva_end(ap);"""
+
+          if new in text:
+              print("LibreSSL syslog already patched.")
+          elif old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+              print("LibreSSL syslog patched successfully.")
+          else:
+              raise SystemExit(
+                  "ERROR: Could not find the expected LibreSSL syslog block."
+              )
+          PY
+
+      - name: Use the compiled ARM64 host lock for exclusive accesses
+        run: git -C externals/dynarmic apply "$GITHUB_WORKSPACE/ios-app/patches/dynarmic-host-monitor.patch"
+
+      - name: Patch Dynarmic and Oaknut for iOS dual-mapped JIT
+        run: |
+          set -euo pipefail
+          python3 ios-app/patches/apply-ios-jit-memory.py
+          python3 ios-app/patches/apply-guarded-fastmem.py
+
+      - name: Configure libretro software core for iOS ARM64
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-ios-libretro \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DHAVE_EXPLICIT_BZERO=OFF \
+            -DHAVE_REALLOCARRAY=OFF \
+            -DHAVE_TIMINGSAFE_MEMCMP=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_C_FLAGS=-DIOS \
+            '-DCMAKE_CXX_FLAGS=-DIOS -DAZAHAR_SUPER_EXPERIMENTAL=1' \
+            -DIOS=ON \
+            -DENABLE_LIBRETRO=ON \
+            -DENABLE_QT=OFF \
+            -DENABLE_SDL2=OFF \
+            -DENABLE_OPENGL=OFF \
+            -DENABLE_VULKAN=ON \
+            -DENABLE_SOFTWARE_RENDERER=ON \
+            -DENABLE_LTO=ON \
+            -DENABLE_OPT=OFF \
+            -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
+            -DCITRA_WARNINGS_AS_ERRORS=OFF
+
+      - name: Compile SUPER shader and rasterizer objects first
+        run: |
+          set -euo pipefail
+          ninja -C build-ios-libretro -j 3 \
+            src/video_core/CMakeFiles/video_core.dir/renderer_software/sw_rasterizer.cpp.o \
+            src/video_core/CMakeFiles/video_core.dir/shader/shader_jit.cpp.o \
+            src/video_core/CMakeFiles/video_core.dir/shader/shader_jit_a64_compiler.cpp.o
+
+      - name: Build Azahar libretro backend
+        run: |
+          set -euo pipefail
+          cmake --build build-ios-libretro \
+            --target citra_libretro --parallel 3
+
+      - name: Verify JIT halt bridge is exported from the iOS core
+        run: |
+          set -euo pipefail
+          dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
+          test -n "$dylib"
+          if ! xcrun nm -gU "$dylib" | grep -E '(^|[[:space:]])_azahar_jit_request_halt$'; then
+            echo "::error::JIT halt bridge symbol is not exported by $dylib"
+            exit 1
+          fi
+          echo "Verified JIT halt bridge export in $dylib"
+
+      - name: Verify MoltenVK frontend bridge exports
+        run: |
+          set -euo pipefail
+          dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
+          test -n "$dylib"
+          for sym in azahar_ios_vk_start azahar_ios_vk_get_interface azahar_ios_vk_readback azahar_ios_vk_readback_frame azahar_ios_vk_readback_failed azahar_ios_vk_drain_readback azahar_ios_vk_shutdown azahar_ios_vk_game_loaded azahar_ios_vk_set_metal_layer azahar_ios_vk_present_frame azahar_ios_vk_present_extent; do
+            if ! xcrun nm -gU "$dylib" | grep -E "(^|[[:space:]])_${sym}$"; then
+              echo "::error::MoltenVK interface export is missing: $sym"
+              exit 1
+            fi
+          done
+
+      - name: Bundle the software core and package unsigned IPA
+        run: |
+          set -euo pipefail
+          app="ios-app/.derived/Build/Products/Release-iphoneos/AzaharIOS.app"
+          test -d "$app"
+          dylib="$(find build-ios-libretro -name 'azahar_libretro*.dylib' -print -quit)"
+          if [[ -z "$dylib" ]]; then
+            echo "::error::libretro dylib not produced."
+            exit 1
+          fi
+          echo "Core dylib: $dylib"
+          otool -L "$dylib"
+          lipo "$dylib" -verify_arch arm64
+          mkdir -p "$app/Frameworks"
+          cp "$dylib" "$app/Frameworks/azahar_libretro.dylib"
+          lipo "$app/AzaharIOS" -verify_arch arm64
+          plutil -lint "$app/Info.plist"
+          test "$( /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$app/Info.plist" )" = 'AzaharFE SUPER'
+          test -f "$app/Assets.car"
+
+          mkdir -p release/Payload
+          ditto "$app" release/Payload/AzaharIOS.app
+          (
+            cd release
+            zip -qry azahar-super-experimental-display-unsigned.ipa Payload
+            unzip -tq azahar-super-experimental-display-unsigned.ipa
+          )
+          test -s release/azahar-super-experimental-display-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-super-experimental-display-unsigned
+          path: release/azahar-super-experimental-display-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
