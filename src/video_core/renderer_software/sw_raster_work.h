@@ -22,6 +22,32 @@ struct ScanlineEdge {
     }
 };
 
+// Intersect a span with the inclusive nonnegative range of each linear edge.
+// The caller uses bounded fixed-point coordinates; 64-bit intermediates also
+// keep negation and ceiling division safe for every int32 edge value.
+struct CoveredSpan {
+    std::size_t first;
+    std::size_t end;
+
+    constexpr void Clip(ScanlineEdge edge) {
+        const auto start = static_cast<std::int64_t>(edge.first);
+        const auto step = static_cast<std::int64_t>(edge.step);
+        if (step > 0 && start < 0) {
+            const auto lower = static_cast<std::size_t>((-start + step - 1) / step);
+            first = std::min(end, std::max(first, lower));
+        } else if (step < 0) {
+            if (start < 0) {
+                end = first;
+            } else {
+                const auto upper = static_cast<std::size_t>(start / -step + 1);
+                end = std::max(first, std::min(end, upper));
+            }
+        } else if (step == 0 && start < 0) {
+            end = first;
+        }
+    }
+};
+
 struct RasterWorkPlan {
     std::size_t rows_per_job;
     bool inline_work;

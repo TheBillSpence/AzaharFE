@@ -13,6 +13,7 @@
 #include "video_core/renderer_software/sw_clipper.h"
 #include "video_core/renderer_software/sw_framebuffer.h"
 #include "video_core/renderer_software/sw_raster_work.h"
+#include "video_core/texture/texture_decode.h"
 
 namespace Pica {
 struct RegsInternal;
@@ -44,10 +45,17 @@ private:
     void ProcessTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                          bool reversed = false);
 
+    struct PreparedTexture {
+        Pica::Texture::TextureInfo info{};
+        const u8* base = nullptr;
+        bool valid = false;
+    };
+
     /// Returns the texture color of the currently processed pixel.
     std::array<Common::Vec4<u8>, 4> TextureColor(
         std::span<const Common::Vec2<f24>, 3> uv,
-        std::span<const Pica::TexturingRegs::FullTextureConfig, 3> textures, f24 tc0_w) const;
+        std::span<const Pica::TexturingRegs::FullTextureConfig, 3> textures, f24 tc0_w,
+        std::span<const PreparedTexture, 3> prepared) const;
 
     /// Returns the final pixel color with blending or logic ops applied.
     Common::Vec4<u8> PixelColor(u16 x, u16 y, Common::Vec4<u8> combiner_output) const;

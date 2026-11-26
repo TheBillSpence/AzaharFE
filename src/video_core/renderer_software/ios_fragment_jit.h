@@ -48,10 +48,22 @@ public:
             key[i * 4 + 2] = stages[i].ops_raw;
             key[i * 4 + 3] = stages[i].scales_raw;
         }
+        // Adjacent primitives often share the same shader. Map nodes never move.
+        if (has_last_key && key == last_key) {
+            return last_program;
+        }
+        last_key = key;
+        has_last_key = true;
+        last_program = nullptr;
         if (const auto it = cache.find(key); it != cache.end()) {
-            return it->second.run ? &it->second : nullptr;
+            last_program = it->second.run ? &it->second : nullptr;
+            return last_program;
         }
         if (cache.size() >= 1024) {
+            if (!reported_cache_limit) {
+                reported_cache_limit = true;
+                LibRetro::DisplayMessage("SUPER27 fragment cache full; using reference");
+            }
             return nullptr;
         }
         Program program;
@@ -61,7 +73,8 @@ public:
             LibRetro::DisplayMessage("SUPER27 fragment code allocation failed; using reference");
         }
         const auto it = cache.emplace(key, std::move(program)).first;
-        return it->second.run ? &it->second : nullptr;
+        last_program = it->second.run ? &it->second : nullptr;
+        return last_program;
     }
 
     static Color Run(const Program& program, const Color& primary, const Color& lighting,
@@ -319,13 +332,18 @@ private:
             const auto& s = stages[i];
             const auto color_op = s.color_op.Value();
             const bool dot = color_op == Operation::Dot3_RGB || color_op == Operation::Dot3_RGBA;
-            const bool pass_through =
-                i != 0 && color_op == Operation::Replace && s.alpha_op == Operation::Replace &&
-                s.color_source1 == Source::Previous && s.alpha_source1 == Source::Previous &&
+            const auto packed_source = ColorSource(s, i, 0);
+            const bool packed_replace =
+                color_op == Operation::Replace && s.alpha_op == Operation::Replace &&
+                packed_source == AlphaSource(s, 0) &&
                 s.color_modifier1 == Stage::ColorModifier::SourceColor &&
                 s.alpha_modifier1 == Stage::AlphaModifier::SourceAlpha &&
                 s.GetColorMultiplier() == 1 && s.GetAlphaMultiplier() == 1;
-            if (!pass_through) {
+            if (packed_replace) {
+                if (packed_source != Source::Previous) {
+                    load(W2, packed_source, i);
+                }
+            } else {
                 if (dot) {
                     out.MOV(W12, WZR);
                     for (unsigned channel = 0; channel < 3; ++channel) {
@@ -430,6 +448,10 @@ private:
     }
 
     bool reported_native = false;
+    bool reported_cache_limit = false;
+    bool has_last_key = false;
+    std::array<u32, 25> last_key{};
+    const Program* last_program = nullptr;
     Pica::Shader::IOSShaderCodePool pool;
     std::map<std::array<u32, 25>, Program> cache;
 };

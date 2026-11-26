@@ -356,7 +356,28 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
     const auto w_inverse = Common::MakeVec(v0.pos.w, v1.pos.w, v2.pos.w);
 
+    if (min_x >= max_x || min_y >= max_y) {
+        return;
+    }
     const auto textures = regs.texturing.GetTextures();
+    std::array<PreparedTexture, 3> prepared_textures{};
+    if (optimize_rasterization) {
+        for (std::size_t i = 0; i < textures.size(); ++i) {
+            const auto& texture = textures[i];
+            if (!texture.enabled || texture.config.address == 0 ||
+                texture.format > TexturingRegs::TextureFormat::ETC1A4 ||
+                (i == 0 && texture.config.type == TexturingRegs::TextureConfig::Disabled)) {
+                continue;
+            }
+            auto& prepared = prepared_textures[i];
+            prepared.info = TextureInfo::FromPicaRegister(texture.config, texture.format);
+            prepared.valid = true;
+            if (i != 0 || (texture.config.type != TexturingRegs::TextureConfig::TextureCube &&
+                           texture.config.type != TexturingRegs::TextureConfig::ShadowCube)) {
+                prepared.base = memory.GetPhysicalPointer(prepared.info.physical_address);
+            }
+        }
+    }
     const auto tev_stages = regs.texturing.GetTevStages();
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
     // Compile before publishing worker tasks; all workers only execute immutable code.
@@ -387,9 +408,6 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         }
     }
 
-    if (min_x >= max_x || min_y >= max_y) {
-        return;
-    }
     fb.Bind();
 
     const auto columns = static_cast<std::size_t>((max_x - min_x) / 16);
@@ -405,6 +423,11 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         regs.rasterizer.scissor_test.mode == RasterizerRegs::ScissorMode::Exclude;
     const bool w_buffer =
         regs.rasterizer.depthmap_enable == RasterizerRegs::DepthBuffering::WBuffering;
+    const bool needs_tc0_w =
+        !optimize_rasterization ||
+        (textures[0].enabled && textures[0].config.address != 0 &&
+         textures[0].config.type != TexturingRegs::TextureConfig::Texture2D &&
+         textures[0].config.type != TexturingRegs::TextureConfig::Disabled);
     const auto& output_merger = regs.framebuffer.output_merger;
     const bool color_write = regs.framebuffer.framebuffer.allow_color_write != 0;
     const auto& framebuffer = regs.framebuffer.framebuffer;
@@ -448,11 +471,26 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         const auto e1 = edge(2, 0, bias1);
         const auto e2 = edge(0, 1, bias2);
         s32 ew0 = e0.first, ew1 = e1.first, ew2 = e2.first;
+        if (incremental && end_x - first_x >= 256) {
+            CoveredSpan span{0, static_cast<std::size_t>((end_x - first_x + 15) / 16)};
+            span.Clip(e0);
+            span.Clip(e1);
+            span.Clip(e2);
+            if (span.first == span.end) {
+                return;
+            }
+            end_x = static_cast<u16>(std::min<std::size_t>(end_x, first_x + span.end * 16));
+            first_x = static_cast<u16>(first_x + span.first * 16);
+            ew0 += static_cast<s32>(span.first) * e0.step;
+            ew1 += static_cast<s32>(span.first) * e1.step;
+            ew2 += static_cast<s32>(span.first) * e2.step;
+        }
         for (u16 x = first_x; x < end_x;
              x += 0x10, ew0 += e0.step, ew1 += e1.step, ew2 += e2.step) {
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
             // Exact four-pixel coverage rejection. Do not alter barycentric precision.
-            if (incremental && ((x - first_x) & 63) == 0 && x + 48 < end_x) {
+            if (incremental && (ew0 < 0 || ew1 < 0 || ew2 < 0) &&
+                ((x - first_x) & 63) == 0 && x + 48 < end_x) {
                 const auto lane = (int32x4_t){0, 1, 2, 3};
                 const auto a = vmlaq_n_s32(vdupq_n_s32(ew0), lane, e0.step);
                 const auto b = vmlaq_n_s32(vdupq_n_s32(ew1), lane, e1.step);
@@ -491,8 +529,10 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             const auto baricentric_coordinates = Common::MakeVec(
                 f24::FromFloat32(static_cast<f32>(w0)), f24::FromFloat32(static_cast<f32>(w1)),
                 f24::FromFloat32(static_cast<f32>(w2)));
-            const f24 interpolated_w_inverse =
-                f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
+            f24 interpolated_w_inverse = f24::Zero();
+            if (w_buffer || !optimize_rasterization) {
+                interpolated_w_inverse = f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
+            }
 
             // interpolated_z = z / w
             const float interpolated_z_over_w =
@@ -515,6 +555,9 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             // No writes here: alpha test and depth/stencil updates retain their original order.
             if (early_depth && !depth_pass(x, y, depth)) {
                 continue;
+            }
+            if (!w_buffer && optimize_rasterization) {
+                interpolated_w_inverse = f24::One() / Common::Dot(w_inverse, baricentric_coordinates);
             }
 
             /**
@@ -575,8 +618,10 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
             }
 
             // Sample bound texture units.
-            const f24 tc0_w = get_interpolated_attribute(v0.tc0_w, v1.tc0_w, v2.tc0_w);
-            const auto texture_color = TextureColor(uv, textures, tc0_w);
+            const f24 tc0_w = needs_tc0_w
+                                  ? get_interpolated_attribute(v0.tc0_w, v1.tc0_w, v2.tc0_w)
+                                  : f24::Zero();
+            const auto texture_color = TextureColor(uv, textures, tc0_w, prepared_textures);
 
             Common::Vec4<u8> primary_fragment_color = {0, 0, 0, 0};
             Common::Vec4<u8> secondary_fragment_color = {0, 0, 0, 0};
@@ -702,7 +747,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
 
 std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
     std::span<const Common::Vec2<f24>, 3> uv,
-    std::span<const Pica::TexturingRegs::FullTextureConfig, 3> textures, f24 tc0_w) const {
+    std::span<const Pica::TexturingRegs::FullTextureConfig, 3> textures, f24 tc0_w,
+    std::span<const PreparedTexture, 3> prepared) const {
     std::array<Common::Vec4<u8>, 4> texture_color{};
     for (u32 i = 0; i < 3; ++i) {
         const auto& texture = textures[i];
@@ -786,8 +832,13 @@ std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
             t = texture.config.height - 1 -
                 GetWrappedTexCoord(texture.config.wrap_t, t, texture.config.height);
 
-            const u8* texture_data = memory.GetPhysicalPointer(texture_address);
-            const auto info = TextureInfo::FromPicaRegister(texture.config, texture.format);
+            const auto& cached = prepared[i];
+            const u8* texture_data = cached.base && cached.info.physical_address == texture_address
+                                         ? cached.base
+                                         : memory.GetPhysicalPointer(texture_address);
+            const auto info = cached.valid
+                                  ? cached.info
+                                  : TextureInfo::FromPicaRegister(texture.config, texture.format);
 
             // TODO: Apply the min and mag filters to the texture
             texture_color[i] = LookupTexture(texture_data, s, t, info);
@@ -894,9 +945,11 @@ Common::Vec4<u8> RasterizerSoftware::PixelColor(u16 x, u16 y,
 
         blend_output = EvaluateBlendEquation(combiner_output, srcfactor, dest, dstfactor,
                                              params.blend_equation_rgb);
-        blend_output.a() = EvaluateBlendEquation(combiner_output, srcfactor, dest, dstfactor,
-                                                 params.blend_equation_a)
-                               .a();
+        if (!optimize_rasterization || params.blend_equation_rgb != params.blend_equation_a) {
+            blend_output.a() = EvaluateBlendEquation(combiner_output, srcfactor, dest, dstfactor,
+                                                     params.blend_equation_a)
+                                   .a();
+        }
     } else {
         blend_output =
             Common::MakeVec(LogicOp(combiner_output.r(), dest.r(), output_merger.logic_op),

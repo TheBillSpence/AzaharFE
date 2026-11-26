@@ -43,16 +43,17 @@ Framebuffer::~Framebuffer() = default;
 
 void Framebuffer::Bind() {
     PAddr addr = regs.framebuffer.GetColorBufferPhysicalAddress();
-    if (color_addr != addr) [[unlikely]] {
+    if (!bound || color_addr != addr) [[unlikely]] {
         color_addr = addr;
         color_buffer = memory.GetPhysicalPointer(color_addr);
     }
 
     addr = regs.framebuffer.GetDepthBufferPhysicalAddress();
-    if (depth_addr != addr) [[unlikely]] {
+    if (!bound || depth_addr != addr) [[unlikely]] {
         depth_addr = addr;
         depth_buffer = memory.GetPhysicalPointer(depth_addr);
     }
+    bound = true;
 }
 
 void Framebuffer::DrawPixel(u32 x, u32 y, const Common::Vec4<u8>& color) const {

@@ -1,5 +1,6 @@
 // Copyright 2026 AzaharFE contributors
 // Licensed under GPLv2 or any later version.
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <random>
@@ -19,6 +20,32 @@ int main() {
                                   static_cast<std::int64_t>(by - ay) * (x + n * 16 - ax) + bias;
             assert(value == expected);
             value += edge.step;
+        }
+    }
+    // Compare clipped spans against a scalar coverage mask, including empty,
+    // single-pixel, flat and negative-slope edges.
+    std::uniform_int_distribution<int> first_value(-1000000, 1000000);
+    std::uniform_int_distribution<int> step_value(-262144, 262144);
+    for (int i = 0; i < 100000; ++i) {
+        const std::size_t count = static_cast<std::size_t>(i % 129);
+        const std::array<ScanlineEdge, 3> edges{{
+            {first_value(rng), i % 7 == 0 ? 0 : step_value(rng)},
+            {first_value(rng), i % 11 == 0 ? 0 : step_value(rng)},
+            {first_value(rng), i % 13 == 0 ? 0 : step_value(rng)},
+        }};
+        CoveredSpan span{0, count};
+        for (const auto edge : edges) {
+            span.Clip(edge);
+        }
+        assert(span.first <= span.end && span.end <= count);
+        for (std::size_t x = 0; x < count; ++x) {
+            bool covered = true;
+            for (const auto edge : edges) {
+                covered &= static_cast<std::int64_t>(edge.first) +
+                               static_cast<std::int64_t>(edge.step) * static_cast<std::int64_t>(x) >=
+                           0;
+            }
+            assert(covered == (x >= span.first && x < span.end));
         }
     }
     for (std::size_t workers : {1, 2, 4, 6}) {

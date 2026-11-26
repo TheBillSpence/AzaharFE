@@ -2,7 +2,7 @@ name: AzaharFE Software Rasterizer Regression
 on:
   workflow_dispatch:
   push:
-    branches: [ios-jit-experiment]
+    branches: [ios-jit-experiment, SUPER-EXPERIMENTAL]
     paths:
       - 'src/video_core/renderer_software/**'
       - 'tools/ios-video-tests/raster_work.cpp'

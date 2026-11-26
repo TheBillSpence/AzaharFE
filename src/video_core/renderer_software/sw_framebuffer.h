@@ -50,10 +50,11 @@ public:
 private:
     Memory::MemorySystem& memory;
     const Pica::FramebufferRegs& regs;
-    PAddr color_addr;
+    PAddr color_addr{};
     u8* color_buffer{};
-    PAddr depth_addr;
+    PAddr depth_addr{};
     u8* depth_buffer{};
+    bool bound = false;
 };
 
 u8 PerformStencilAction(Pica::FramebufferRegs::StencilAction action, u8 old_stencil, u8 ref);
