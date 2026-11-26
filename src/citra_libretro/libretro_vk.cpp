@@ -151,8 +151,8 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     for (uint32_t i = 0; i < queue_family_count; i++) {
         if (surface) {
             VkBool32 supported = VK_FALSE;
-            if (!surface_support ||
-                surface_support(gpu, i, surface, &supported) != VK_SUCCESS || !supported)
+            if (!surface_support || surface_support(gpu, i, surface, &supported) != VK_SUCCESS ||
+                !supported)
                 continue;
         }
         if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
