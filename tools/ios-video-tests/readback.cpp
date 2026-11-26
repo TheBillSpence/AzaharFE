@@ -161,6 +161,9 @@ int main() {
         const float rectangle[] = {0, 0, 1, 1, 0, 0, 1, 1};
         Check(azahar_ios_vk_present_frame(3, 5, 3, 5, rectangle, 1) == -1,
               "headless presentation falls back");
+        unsigned surface_width = 1, surface_height = 1;
+        azahar_ios_vk_present_extent(&surface_width, &surface_height);
+        Check(surface_width == 0 && surface_height == 0, "headless surface extent");
         CheckFrames(*vk, format, false);
         CheckFrames(*vk, format, true);
         azahar_ios_vk_shutdown();

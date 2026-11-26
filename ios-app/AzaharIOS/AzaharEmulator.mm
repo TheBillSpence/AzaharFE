@@ -143,6 +143,9 @@ static std::atomic<bool> sJITProbeFailed{false};
     unsigned _readbackPending;
     decltype(&azahar_ios_vk_set_metal_layer) _vkSetMetalLayer;
     decltype(&azahar_ios_vk_present_frame) _vkPresentFrame;
+    decltype(&azahar_ios_vk_present_extent) _vkPresentExtent;
+    unsigned _lastSurfaceWidth, _lastSurfaceHeight;
+    CGSize _lastRequestedSurface;
     bool _metalActive;
     unsigned _metalPending, _metalAttempts, _metalSubmitted, _metalWidth, _metalHeight;
     CGSize _metalDisplaySize;
@@ -386,6 +389,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _vkRequested = false;
         _metalActive = false;
         _metalPending = _metalAttempts = _metalSubmitted = _metalWidth = _metalHeight = 0;
+        _lastSurfaceWidth = _lastSurfaceHeight = 0;
+        _lastRequestedSurface = CGSizeZero;
         _readbackFailures = 0;
         _playSession = [NSObject new];
         _completedSlices.store(0);
@@ -540,6 +545,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_set_metal_layer"));
         _vkPresentFrame = reinterpret_cast<decltype(_vkPresentFrame)>(
             dlsym(_libraryHandle, "azahar_ios_vk_present_frame"));
+        _vkPresentExtent = reinterpret_cast<decltype(_vkPresentExtent)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_present_extent"));
         _vkReadbackFailed = reinterpret_cast<decltype(_vkReadbackFailed)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback_failed"));
         _vkDrainReadback = reinterpret_cast<decltype(_vkDrainReadback)>(
@@ -948,6 +955,19 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             ++_metalAttempts;
             const int result = _vkPresentFrame(width, height, (unsigned)std::lround(size.width),
                                                (unsigned)std::lround(size.height), rect, 1);
+            if (_vkPresentExtent) {
+                unsigned surfaceWidth = 0, surfaceHeight = 0;
+                _vkPresentExtent(&surfaceWidth, &surfaceHeight);
+                if (surfaceWidth != _lastSurfaceWidth || surfaceHeight != _lastSurfaceHeight ||
+                    !CGSizeEqualToSize(size, _lastRequestedSurface)) {
+                    _lastSurfaceWidth = surfaceWidth;
+                    _lastSurfaceHeight = surfaceHeight;
+                    _lastRequestedSurface = size;
+                    [self writeDiagnostic:[NSString stringWithFormat:
+                        @"Metal resolution: core %ux%u; requested drawable %.0fx%.0f px; actual swapchain %ux%u px; status %d",
+                        width, height, size.width, size.height, surfaceWidth, surfaceHeight, result]];
+                }
+            }
             if (result == 1) {
                 ++_metalSubmitted;
                 _metalPending = 0;

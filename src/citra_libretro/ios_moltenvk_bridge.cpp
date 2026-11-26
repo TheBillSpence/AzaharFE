@@ -64,6 +64,7 @@ struct Context {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkExtent2D extent{};
     VkFormat surface_format = VK_FORMAT_UNDEFINED;
+    VkFilter present_filter = VK_FILTER_NEAREST;
     unsigned requested_width = 0, requested_height = 0;
     bool rebuild_surface = false;
     struct PresentSlot {
@@ -343,6 +344,16 @@ bool CreateSwapchain(unsigned width, unsigned height) {
                   std::clamp(height, caps.minImageExtent.height, caps.maxImageExtent.height)};
     if (!state.extent.width || !state.extent.height)
         return false;
+    // Do not silently display a point-sized surface on a Retina screen.
+    // Allow small rounding/platform differences, but use the old path when
+    // the surface is substantially smaller than the physical view request.
+    if (static_cast<double>(state.extent.width) < width * 0.9 ||
+        static_cast<double>(state.extent.height) < height * 0.9)
+        return false;
+    state.present_filter = (src.optimalTilingFeatures &
+                            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
+                               ? VK_FILTER_LINEAR
+                               : VK_FILTER_NEAREST;
     const uint32_t image_count = std::max(3u, caps.minImageCount);
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     info.surface = state.surface;
@@ -710,7 +721,7 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
             blit.dstOffsets[1].x > blit.dstOffsets[0].x &&
             blit.dstOffsets[1].y > blit.dstOffsets[0].y)
             vkCmdBlitImage(command, source.image, source.newLayout, dest.image, dest.newLayout, 1,
-                           &blit, VK_FILTER_NEAREST);
+                           &blit, state.present_filter);
     }
     source.oldLayout = source.newLayout;
     source.newLayout = state.image_layout;
@@ -759,6 +770,19 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     (void)rectangles;
     (void)count;
     return -1;
+#endif
+}
+
+extern "C" void azahar_ios_vk_present_extent(unsigned* width, unsigned* height) {
+    if (width)
+        *width = 0;
+    if (height)
+        *height = 0;
+#if defined(__APPLE__)
+    if (width)
+        *width = state.extent.width;
+    if (height)
+        *height = state.extent.height;
 #endif
 }
 

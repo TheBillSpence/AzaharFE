@@ -16,6 +16,9 @@ __attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* 
 __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
     unsigned width, unsigned height, unsigned drawable_width, unsigned drawable_height,
     const float* rectangles, unsigned count);
+// Actual surface extent in physical pixels, including a rejected extent.
+__attribute__((visibility("default"))) void azahar_ios_vk_present_extent(unsigned* width,
+                                                                         unsigned* height);
 __attribute__((visibility("default"))) bool azahar_ios_vk_readback(unsigned width, unsigned height,
                                                                    const void** pixels,
                                                                    std::size_t* pitch);

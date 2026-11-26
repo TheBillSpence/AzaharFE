@@ -72,6 +72,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (!device) return nil;
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = device;
+    // A manually created sublayer does not inherit the UIView's Retina scale.
+    // MoltenVK derives surface currentExtent from bounds * contentsScale.
+    layer.contentsScale = self.window ? self.window.screen.scale : UIScreen.mainScreen.scale;
+    layer.minificationFilter = kCAFilterLinear;
+    layer.magnificationFilter = kCAFilterLinear;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = NO;
     layer.opaque = YES;
@@ -92,6 +97,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
                              std::lround(self.bounds.size.height*scale));
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
+    self.metalPanel.contentsScale = scale;
     self.metalPanel.frame = self.bounds;
     if (size.width > 0 && size.height > 0 && !CGSizeEqualToSize(self.metalPanel.drawableSize,size))
         self.metalPanel.drawableSize = size;
