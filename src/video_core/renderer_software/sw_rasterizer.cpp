@@ -378,11 +378,11 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
     const auto& output_merger = regs.framebuffer.output_merger;
     const bool color_write = regs.framebuffer.framebuffer.allow_color_write != 0;
     const auto& framebuffer = regs.framebuffer.framebuffer;
-    const bool early_depth = optimize_rasterization && output_merger.depth_test_enable &&
-                             !output_merger.stencil_test.enable &&
-                             output_merger.depth_test_func != FramebufferRegs::CompareFunc::Always &&
-                             output_merger.fragment_operation_mode ==
-                                 FramebufferRegs::FragmentOperationMode::Default;
+    const bool early_depth =
+        optimize_rasterization && output_merger.depth_test_enable &&
+        !output_merger.stencil_test.enable &&
+        output_merger.depth_test_func != FramebufferRegs::CompareFunc::Always &&
+        output_merger.fragment_operation_mode == FramebufferRegs::FragmentOperationMode::Default;
     const auto depth_pass = [&](u16 x, u16 y, float depth) {
         const auto bits = FramebufferRegs::DepthBitsPerPixel(framebuffer.depth_format);
         const u32 z = static_cast<u32>(depth * ((1 << bits) - 1));
