@@ -51,7 +51,7 @@ jobs:
           "$RUNNER_TEMP/input-test"
           xcrun clang -fobjc-arc -c ios-app/AzaharIOS/AZOptions.m -o "$RUNNER_TEMP/options.o"
           xcrun clang++ -std=c++17 -fobjc-arc "${includes[@]}" tools/ios-input-tests/apple.mm \
-            "$RUNNER_TEMP/options.o" -framework Foundation -framework GameController -framework CoreGraphics -o "$RUNNER_TEMP/apple-input-test"
+            "$RUNNER_TEMP/options.o" -framework Foundation -framework GameController -o "$RUNNER_TEMP/apple-input-test"
           "$RUNNER_TEMP/apple-input-test"
 
       - name: Install build tools

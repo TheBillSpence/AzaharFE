@@ -4,8 +4,7 @@ NSArray<NSString *> *AZOptionKeys(void) {
     return @[@"AzaharJITPreset", @"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile",
              @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"citra_graphics_api", @"citra_resolution_factor",
              @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache",
-             @"AzaharAsyncShaders", @"AzaharVulkanReadback", @"AzaharPresentation",
-             @"AzaharLandscapeLayout", @"AzaharTouchSize", @"AzaharDisplayAspect", @"AzaharHideControls", @"AzaharControlOpacity"];
+             @"AzaharAsyncShaders", @"AzaharVulkanReadback", @"AzaharPresentation"];
 }
 NSString *AZOptionTitle(NSString *key) {
     return @{@"AzaharJITPreset":@"JIT", @"AzaharExperimentalJIT":@"CPU JIT", @"AzaharJITSpeed":@"JIT performance mode",
@@ -20,9 +19,7 @@ NSString *AZOptionTitle(NSString *key) {
              @"citra_use_disk_shader_cache":@"Shader precompilation / cache",
              @"AzaharAsyncShaders":@"Async shader compilation",
              @"AzaharVulkanReadback":@"Vulkan framebuffer readback",
-             @"AzaharPresentation":@"Vulkan presentation", @"AzaharLandscapeLayout":@"Landscape layout",
-             @"AzaharTouchSize":@"Touchscreen size", @"AzaharDisplayAspect":@"Display aspect ratio",
-             @"AzaharHideControls":@"Hide controls with controller", @"AzaharControlOpacity":@"Control opacity"}[key];
+             @"AzaharPresentation":@"Vulkan presentation"}[key];
 }
 NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITPreset"]) return @[@"combined", @"off", @"custom"];
@@ -32,11 +29,6 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharShaderJIT"] || [key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
     if ([key isEqual:@"AzaharPresentation"]) return @[@"metal", @"readback"];
-    if ([key isEqual:@"AzaharLandscapeLayout"]) return @[@"corner", @"stacked", @"top_only"];
-    if ([key isEqual:@"AzaharTouchSize"]) return @[@"30", @"15", @"20", @"25", @"35", @"40", @"45", @"50", @"55", @"60"];
-    if ([key isEqual:@"AzaharDisplayAspect"]) return @[@"native", @"stretch"];
-    if ([key isEqual:@"AzaharHideControls"]) return @[@"on", @"off"];
-    if ([key isEqual:@"AzaharControlOpacity"]) return @[@"45", @"20", @"30", @"60", @"80", @"100"];
     if ([key isEqual:@"AzaharVulkanReadback"]) return @[@"async", @"sync"];
     if ([key isEqual:@"AzaharSoftwareThreads"]) return @[@"auto", @"1", @"2", @"4", @"6"];
     if ([key isEqual:@"AzaharSoftwareRasterizer"]) return @[@"optimized", @"reference"];
@@ -49,11 +41,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
 NSString *AZChoiceTitle(NSString *key, NSString *v) {
     if ([key isEqual:@"AzaharSoftwareThreads"] && ![v isEqual:@"auto"])
         return [NSString stringWithFormat:@"%@ threads", v];
-    if ([key isEqual:@"AzaharTouchSize"] || [key isEqual:@"AzaharControlOpacity"])
-        return [NSString stringWithFormat:@"%@%%",v];
     return @{@"metal":@"Direct Metal surface (experimental)", @"readback":@"CPU readback (compatibility)",
-             @"corner":@"Option B — Corner (default)", @"stacked":@"Option A — Stacked",
-             @"top_only":@"Top screen only", @"native":@"Original (no stretch)", @"stretch":@"Stretch to fit",
              @"combined":@"Automatic (SUPER JIT)", @"custom":@"Advanced settings",
              @"on":@"On", @"off":@"Off", @"enabled":@"Enabled", @"disabled":@"Disabled",
              @"safe":@"Compatibility (fallback)", @"linked":@"Linked blocks (test)",
@@ -117,14 +105,10 @@ NSDictionary<NSString *, NSString *> *AZLaunchOptions(NSURL *game) {
     if (![values[@"AzaharExperimentalJIT"] isEqual:@"on"]) values[@"AzaharShaderJIT"] = @"off";
     return [values copy];
 }
-NSArray<NSString *> *AZDisplayKeys(void) {
-    return @[@"AzaharLandscapeLayout", @"AzaharTouchSize", @"AzaharDisplayAspect",
-             @"AzaharHideControls", @"AzaharControlOpacity"];
-}
 BOOL AZLaunchOptionsRequireRestart(NSDictionary<NSString *, NSString *> *before,
                                    NSDictionary<NSString *, NSString *> *after) {
     for (NSString *key in AZOptionKeys()) {
-        if ([key isEqual:@"AzaharJITPreset"] || [AZDisplayKeys() containsObject:key]) continue;
+        if ([key isEqual:@"AzaharJITPreset"]) continue;
         if ([key isEqual:@"AzaharJITSpeed"] &&
             [before[@"AzaharExperimentalJIT"] isEqual:@"off"] &&
             [after[@"AzaharExperimentalJIT"] isEqual:@"off"]) continue;

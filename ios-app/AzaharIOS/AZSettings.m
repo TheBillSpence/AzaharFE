@@ -70,13 +70,12 @@
 - (void)sessionStatusChanged:(NSNotification *)notification { [self refreshStatus]; }
 - (void)refreshStatus { self.runtimeLabel.text=[AzaharEmulator sessionJITStatus]; }
 - (NSArray<NSString *> *)keysForSection:(NSInteger)section {
-    if (section == 3) return AZDisplayKeys();
     if (section == 1)
         return @[@"AzaharJITPreset", @"citra_graphics_api", @"citra_resolution_factor",
                  @"citra_layout_option", @"citra_swap_screen", @"citra_use_disk_shader_cache"];
     return @[@"AzaharExperimentalJIT", @"AzaharJITSpeed", @"AzaharShaderJIT", @"AzaharDeepProfile", @"AzaharSoftwareThreads", @"AzaharSoftwareRasterizer", @"AzaharAsyncShaders", @"AzaharVulkanReadback", @"AzaharPresentation"];
 }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section==0) return self.perGame && self.game && !self.sessionOptions ? 2 : 1;
     if (self.perGame && !self.game) return 0;
@@ -84,7 +83,6 @@
     return [self keysForSection:section].count;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (section==3) return self.perGame && !self.game ? nil : @"Display Options";
     if (section==2) return nil;
     if (section==0) return self.perGame ? @"Selected game" : nil;
     return self.perGame ? (self.game ? @"Settings for this game" : nil) : @"Universal Settings";
@@ -107,7 +105,6 @@
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section==0 && self.perGame && !self.game) return @"Add a game to set its preferences.";
-    if (section==3 && (!self.perGame || self.game)) return @"Landscape display options apply to the default dual-screen core layout. Changes do not require a core restart.";
     if (section==1 && self.sessionOptions) return @"Values used to launch this session.";
     if (section==1 && self.restartOnClose) return @"Changes are saved for the next launch. Save in-game before stopping the current session.";
     if (section==1 && (!self.perGame || self.game)) return @"Changes apply when you launch the game.";
@@ -194,8 +191,7 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharPresentation"] ? @"Direct Metal surface presents Vulkan frames through CAMetalLayer without CPU readback. Compatibility uses the existing readback path. Reopen the game to switch. Automatic fallback if Metal fails." :
-                [key isEqual:@"AzaharTouchSize"] ? @"Bottom touchscreen height relative to the main screen in landscape." :
+        message:[key isEqual:@"AzaharPresentation"] ? @"Direct Metal surface keeps frames on the GPU. CPU readback preserves build #7 behavior. Relaunch to switch. Does not change game timing or native FPS." :
                 [key isEqual:@"AzaharShaderJIT"] ? @"Experimental ARM64 vertex shader and full TEV fragment combiner compiler. Requires CPU JIT permission; invalid states or failed native validation use the reference combiner. Reopen the game to apply." :
                 [key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :
                 [key isEqual:@"citra_use_disk_shader_cache"] ? @"Vulkan: precompile previously encountered shaders and pipelines at launch, then save new shaders during play. First-time shaders still compile as needed. Disable if a cache causes repeated startup failures. Software rendering does not use this GPU cache." :

@@ -1,10 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <AVFoundation/AVFoundation.h>
-#import <GameController/GameController.h>
-#import <QuartzCore/QuartzCore.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
-#import "AZDisplayGeometry.h"
+#include <cmath>
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
 #import "AZSettings.h"
@@ -50,127 +49,82 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 @interface AZTouchScreen : UIImageView
 @property (nonatomic, weak) AzaharEmulator *host;
-@property (nonatomic, strong) UIImage *frameImage;
 @property (nonatomic, strong) CAMetalLayer *metalPanel;
-@property (nonatomic, strong) CALayer *topPanel;
-@property (nonatomic, strong) CALayer *bottomPanel;
-@property (nonatomic) CGSize frameSize;
-@property (nonatomic) BOOL landscape;
-@property (nonatomic) BOOL metalVisible;
-@property (nonatomic, copy) NSDictionary *displayOptions;
-- (void)displayFrame:(UIImage *)image;
-- (void)displayMetalWidth:(unsigned)width height:(unsigned)height;
-- (void)configureLandscape:(BOOL)landscape options:(NSDictionary *)options;
+@property (nonatomic) CGSize metalFrameSize;
+@property (nonatomic) BOOL showingMetal;
 - (CAMetalLayer *)prepareMetal;
+- (void)resetPresentation;
+- (void)displayMetalWidth:(unsigned)width height:(unsigned)height;
+- (void)displayCPUImage:(UIImage *)image;
 @end
 
 @implementation AZTouchScreen
+- (void)resetPresentation {
+    [self.metalPanel removeFromSuperlayer];
+    self.metalPanel = nil;
+    self.showingMetal = NO;
+    self.metalFrameSize = CGSizeZero;
+    self.image = nil;
+    [self invalidateIntrinsicContentSize];
+}
 - (CAMetalLayer *)prepareMetal {
-    if (!self.metalPanel) {
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) return nil;
-        CAMetalLayer *layer = [CAMetalLayer layer];
-        layer.device = device;
-        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        layer.framebufferOnly = NO;
-        layer.opaque = YES;
-        layer.maximumDrawableCount = 3;
-        layer.presentsWithTransaction = NO;
-        layer.allowsNextDrawableTimeout = YES;
-        [self.layer addSublayer:layer];
-        self.metalPanel = layer;
-    }
-    self.metalVisible = YES;
-    self.metalPanel.hidden = NO;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) return nil;
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = device;
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.framebufferOnly = NO;
+    layer.opaque = YES;
+    layer.maximumDrawableCount = 3;
+    layer.presentsWithTransaction = NO;
+    layer.allowsNextDrawableTimeout = YES;
+    [self.layer addSublayer:layer];
+    self.metalPanel = layer;
     [self setNeedsLayout];
-    return self.metalPanel;
+    [self layoutIfNeeded];
+    return layer;
 }
-
-- (void)configureLandscape:(BOOL)landscape options:(NSDictionary *)options {
-    if (_landscape == landscape && [_displayOptions isEqual:options]) return;
-    [self.host setPointerX:0 y:0 pressed:NO];
-    _landscape = landscape;
-    _displayOptions = [options copy];
-    [self setNeedsLayout];
-}
-
-- (AZDisplayGeometry)geometry {
-    return AZMakeDisplayGeometry(self.frameSize,self.bounds.size,self.landscape,self.displayOptions);
-}
-
-- (void)displayFrame:(UIImage *)image {
-    const CGSize previous = self.frameSize;
-    const BOOL wasMetal = self.metalVisible;
-    self.frameImage = image;
-    self.frameSize = image ? image.size : CGSizeZero;
-    self.metalVisible = NO;
-    self.metalPanel.hidden = YES;
-    if (!self.topPanel) {
-        self.topPanel = [CALayer layer];
-        self.bottomPanel = [CALayer layer];
-        self.topPanel.contentsGravity = kCAGravityResize;
-        self.bottomPanel.contentsGravity = kCAGravityResize;
-        [self.layer addSublayer:self.topPanel];
-        [self.layer addSublayer:self.bottomPanel];
-    }
-    self.image = nil;
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.topPanel.contents = self.bottomPanel.contents = image ? (__bridge id)image.CGImage : nil;
-    [CATransaction commit];
-    if (wasMetal || !CGSizeEqualToSize(previous,self.frameSize) || !image) [self setNeedsLayout];
-}
-
-- (void)displayMetalWidth:(unsigned)width height:(unsigned)height {
-    self.frameImage = nil;
-    self.image = nil;
-    self.frameSize = CGSizeMake(width,height);
-    self.metalVisible = YES;
-    self.metalPanel.hidden = NO;
-    [self setNeedsLayout];
-}
-
 - (void)layoutSubviews {
     [super layoutSubviews];
-    const auto geometry = [self geometry];
+    if (!self.metalPanel) return;
+    const CGFloat scale = self.window ? self.window.screen.scale : UIScreen.mainScreen.scale;
+    CGSize size = CGSizeMake(std::lround(self.bounds.size.width*scale),
+                             std::lround(self.bounds.size.height*scale));
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     self.metalPanel.frame = self.bounds;
-    CGFloat scale = self.window ? self.window.screen.scale : UIScreen.mainScreen.scale;
-    CGSize drawableSize = CGSizeMake(std::lround(self.bounds.size.width*scale),
-                                    std::lround(self.bounds.size.height*scale));
-    if (drawableSize.width > 0 && drawableSize.height > 0 &&
-        !CGSizeEqualToSize(self.metalPanel.drawableSize,drawableSize))
-        self.metalPanel.drawableSize = drawableSize;
-    self.topPanel.hidden = self.metalVisible || !geometry.count;
-    self.bottomPanel.hidden = self.metalVisible || geometry.count < 2;
-    if (geometry.count) {
-        self.topPanel.frame = geometry.destination[0];
-        self.topPanel.contentsRect = geometry.source[0];
-    }
-    if (geometry.count > 1) {
-        self.bottomPanel.frame = geometry.destination[1];
-        self.bottomPanel.contentsRect = geometry.source[1];
-    }
+    if (size.width > 0 && size.height > 0 && !CGSizeEqualToSize(self.metalPanel.drawableSize,size))
+        self.metalPanel.drawableSize = size;
     [CATransaction commit];
+    [self.host setMetalDisplaySize:size];
 }
-
+- (CGSize)intrinsicContentSize {
+    return self.showingMetal && self.metalFrameSize.width > 0
+        ? self.metalFrameSize : [super intrinsicContentSize];
+}
+- (void)displayMetalWidth:(unsigned)width height:(unsigned)height {
+    self.showingMetal = YES;
+    self.metalFrameSize = CGSizeMake(width,height);
+    self.image = nil;
+    self.metalPanel.hidden = NO;
+    [self invalidateIntrinsicContentSize];
+}
+- (void)displayCPUImage:(UIImage *)image {
+    if (self.showingMetal || (self.metalPanel && !self.metalPanel.hidden)) {
+        self.showingMetal = NO;
+        self.metalPanel.hidden = YES;
+        self.metalFrameSize = CGSizeZero;
+        [self invalidateIntrinsicContentSize];
+    }
+    self.image = image;
+}
 - (void)updateTouch:(UITouch *)touch {
     CGPoint p = [touch locationInView:self];
-    const auto geometry = [self geometry];
-    if (geometry.touchIndex < 0) {
-        [self.host setPointerX:0 y:0 pressed:NO];
-        return;
-    }
-    CGRect target = geometry.destination[geometry.touchIndex];
-    if (CGRectIsEmpty(target) || !CGRectContainsPoint(target,p)) {
-        [self.host setPointerX:0 y:0 pressed:NO];
-        return;
-    }
-    CGRect source = geometry.source[geometry.touchIndex];
-    const double u = source.origin.x + source.size.width * (p.x-target.origin.x)/target.size.width;
-    const double v = source.origin.y + source.size.height * (p.y-target.origin.y)/target.size.height;
-    [self.host setPointerX:AZInput::Axis(u*2-1) y:AZInput::Axis(v*2-1) pressed:YES];
+    CGRect bounds = self.bounds;
+    CGSize image = self.showingMetal ? self.metalFrameSize : self.image.size;
+    const auto pointer = AZInput::Project(p.x - CGRectGetMinX(bounds), p.y - CGRectGetMinY(bounds),
+        bounds.size.width, bounds.size.height, image.width, image.height);
+    [self.host setPointerX:pointer.x y:pointer.y pressed:pointer.down];
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [self updateTouch:touches.anyObject];
@@ -258,14 +212,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @interface AZControllerDeck : UIView
 @property (nonatomic, strong) AZCirclePad *stick;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, AZPadButton *> *buttons;
-@property (nonatomic) BOOL landscape;
 @end
 @implementation AZControllerDeck
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hit = [super hitTest:point withEvent:event];
-    // The transparent center must not intercept the 3DS touchscreen.
-    return hit == self ? nil : hit;
-}
 - (void)place:(unsigned)identifier x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h {
     AZPadButton *button = self.buttons[@(identifier)];
     button.frame = CGRectMake(x-w/2, y-h/2, w, h);
@@ -273,30 +221,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     const CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
-    if (self.landscape) {
-        const CGFloat side = MIN(140, w * 0.23);
-        const CGFloat left = side/2, right = w-side/2;
-        const CGFloat f = MIN(34, MIN(side/3.5, h/7.5)), d = MIN(26, f);
-        const CGFloat stick = MIN(58, h*0.26);
-        self.stick.frame = CGRectMake(left-stick/2, h*0.34-stick/2, stick, stick);
-        const CGFloat shoulder = MIN(54, side/2-4);
-        [self place:RETRO_DEVICE_ID_JOYPAD_L x:side*0.25 y:h*0.08 w:shoulder h:24];
-        [self place:RETRO_DEVICE_ID_JOYPAD_L2 x:side*0.75 y:h*0.08 w:shoulder h:24];
-        [self place:RETRO_DEVICE_ID_JOYPAD_R2 x:w-side*0.75 y:h*0.08 w:shoulder h:24];
-        [self place:RETRO_DEVICE_ID_JOYPAD_R x:w-side*0.25 y:h*0.08 w:shoulder h:24];
-        const CGFloat cross = h*0.72, diamond = h*0.36, step = f+2;
-        [self place:RETRO_DEVICE_ID_JOYPAD_UP x:left y:cross-d w:d h:d];
-        [self place:RETRO_DEVICE_ID_JOYPAD_DOWN x:left y:cross+d w:d h:d];
-        [self place:RETRO_DEVICE_ID_JOYPAD_LEFT x:left-d y:cross w:d h:d];
-        [self place:RETRO_DEVICE_ID_JOYPAD_RIGHT x:left+d y:cross w:d h:d];
-        [self place:RETRO_DEVICE_ID_JOYPAD_X x:right y:diamond-step w:f h:f];
-        [self place:RETRO_DEVICE_ID_JOYPAD_B x:right y:diamond+step w:f h:f];
-        [self place:RETRO_DEVICE_ID_JOYPAD_Y x:right-step y:diamond w:f h:f];
-        [self place:RETRO_DEVICE_ID_JOYPAD_A x:right+step y:diamond w:f h:f];
-        [self place:RETRO_DEVICE_ID_JOYPAD_SELECT x:left+side*0.28 y:h*0.94 w:MIN(54,side/2-4) h:20];
-        [self place:RETRO_DEVICE_ID_JOYPAD_START x:right-side*0.28 y:h*0.60 w:MIN(54,side/2-4) h:20];
-        return;
-    }
     const CGFloat left = w * 0.19, right = w * 0.81;
     const CGFloat face = MIN(40, w * 0.115), step = face + 2;
     const CGFloat dpad = MIN(28, w * 0.08);
@@ -323,49 +247,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 @end
 
-@interface AZDisplayMenu : UITableViewController
-@property (nonatomic, strong) NSURL *game;
-@property (nonatomic, copy) void (^changed)(void);
-@end
-
-@implementation AZDisplayMenu
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return AZDisplayKeys().count;
-}
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-    NSString *key = AZDisplayKeys()[indexPath.row];
-    cell.textLabel.text = AZOptionTitle(key);
-    cell.detailTextLabel.text = AZChoiceTitle(key,AZValue(key,self.game));
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    return cell;
-}
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSString *key = AZDisplayKeys()[indexPath.row];
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSString *value in AZChoices(key)) {
-        [menu addAction:[UIAlertAction actionWithTitle:AZChoiceTitle(key,value)
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                AZSetValue(key,value,self.game);
-                if (self.changed) self.changed();
-                [tableView reloadData];
-            }]];
-    }
-    [menu addAction:[UIAlertAction actionWithTitle:@"Use universal setting" style:UIAlertActionStyleDefault
-        handler:^(UIAlertAction *action) {
-            AZSetValue(key,nil,self.game);
-            if (self.changed) self.changed();
-            [tableView reloadData];
-        }]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    menu.popoverPresentationController.sourceView = tableView;
-    menu.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
-    [self presentViewController:menu animated:YES completion:nil];
-}
-@end
-
 @interface AzaharGameViewController : UIViewController <AzaharEmulatorDelegate, UIAdaptivePresentationControllerDelegate>
 - (instancetype)initWithGame:(NSURL *)game;
 @end
@@ -375,7 +256,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, strong) AzaharEmulator *host;
 @property (nonatomic, strong) AZTouchScreen *screen;
 @property (nonatomic, strong) AZCirclePad *circlePad;
-@property (nonatomic, strong) AZControllerDeck *controls;
 @property (nonatomic) BOOL settingsOpen;
 @property (nonatomic) BOOL restartPending;
 @property (nonatomic) BOOL leavingGame;
@@ -411,32 +291,23 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     stop.tintColor = UIColor.systemRedColor;
     stop.accessibilityLabel = @"Stop game and return to library";
     self.navigationItem.rightBarButtonItems = @[gear, stop];
-    UIBarButtonItem *display = [[UIBarButtonItem alloc] initWithTitle:@"Display Options"
-        style:UIBarButtonItemStylePlain target:self action:@selector(showDisplayOptions)];
-    [display setTitleTextAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightMedium]}
-                           forState:UIControlStateNormal];
-    self.navigationItem.leftItemsSupplementBackButton = YES;
-    self.navigationItem.leftBarButtonItem = display;
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
     [notifications addObserver:self selector:@selector(appInactive:) name:UIApplicationWillResignActiveNotification object:nil];
     [notifications addObserver:self selector:@selector(appActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [notifications addObserver:self selector:@selector(audioInterrupted:) name:AVAudioSessionInterruptionNotification object:nil];
     [notifications addObserver:self selector:@selector(audioReset:) name:AVAudioSessionMediaServicesWereResetNotification object:nil];
-    [notifications addObserver:self selector:@selector(controllerChanged:) name:GCControllerDidConnectNotification object:nil];
-    [notifications addObserver:self selector:@selector(controllerChanged:) name:GCControllerDidDisconnectNotification object:nil];
     self.screen = [AZTouchScreen new];
     self.screen.userInteractionEnabled = YES;
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.backgroundColor = UIColor.blackColor;
     self.screen.layer.cornerRadius = 10;
     self.screen.clipsToBounds = YES;
-    self.screen.translatesAutoresizingMaskIntoConstraints = YES;
+    self.screen.translatesAutoresizingMaskIntoConstraints = NO;
     [self.screen setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                                    forAxis:UILayoutConstraintAxisVertical];
     [self.view addSubview:self.screen];
 
     self.status = MakeLabel(@"Starting Azahar...\nExperimental JIT test", 12);
-    self.status.translatesAutoresizingMaskIntoConstraints = YES;
     self.status.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
     self.status.textAlignment = NSTextAlignmentLeft;
     self.status.numberOfLines = 3;
@@ -447,8 +318,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
     AZControllerDeck *controls = [AZControllerDeck new];
     controls.buttons = [NSMutableDictionary new];
-    controls.translatesAutoresizingMaskIntoConstraints = YES;
-    self.controls = controls;
+    controls.translatesAutoresizingMaskIntoConstraints = NO;
     controls.multipleTouchEnabled = YES;
     [self.view addSubview:controls];
 
@@ -495,90 +365,40 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         [controls addSubview:button];
     }
 
-    [self refreshControllerVisibility];
-}
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
 
-- (void)refreshControllerVisibility {
-    BOOL connected = NO;
-    for (GCController *controller in GCController.controllers) {
-        if (controller.extendedGamepad) { connected = YES; break; }
-    }
-    connected = connected && [AZValue(@"AzaharHideControls",self.game) isEqual:@"on"];
-    if (connected != self.controls.hidden) {
-        for (AZPadButton *button in self.controls.buttons.allValues) {
-            [self.host setButton:(unsigned)button.tag pressed:NO];
-            [button setHighlighted:NO];
-        }
-        [self.circlePad centerStick];
-        self.controls.hidden = connected;
-        self.controls.userInteractionEnabled = !connected;
-    }
-    [self.view setNeedsLayout];
-}
+    // Prefer a generous screen but shrink it when the status or controls
+    // need more vertical room (e.g. accessibility text sizes, smaller phones).
+    NSLayoutConstraint *preferredScreenHeight =
+        [self.screen.heightAnchor constraintEqualToAnchor:safe.heightAnchor multiplier:0.58];
+    preferredScreenHeight.priority = UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *minimumScreenHeight =
+        [self.screen.heightAnchor constraintGreaterThanOrEqualToConstant:120];
+    minimumScreenHeight.priority = UILayoutPriorityDefaultLow;
 
-- (void)controllerChanged:(NSNotification *)note {
-    if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [self refreshControllerVisibility]; });
-        return;
-    }
-    [self refreshControllerVisibility];
-}
+    [NSLayoutConstraint activateConstraints:@[
+        [self.screen.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+        [self.screen.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+        [self.screen.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        [self.screen.heightAnchor constraintLessThanOrEqualToAnchor:safe.heightAnchor multiplier:0.58],
+        preferredScreenHeight,
+        minimumScreenHeight,
 
-- (void)viewWillTransitionToSize:(CGSize)size
-       withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    [self.host setPointerX:0 y:0 pressed:NO];
-    for (AZPadButton *button in self.controls.buttons.allValues) {
-        [self.host setButton:(unsigned)button.tag pressed:NO];
-        [button setHighlighted:NO];
-    }
-    [self.circlePad centerStick];
-    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-}
+        [self.status.topAnchor constraintEqualToAnchor:self.screen.bottomAnchor constant:10],
+        [self.status.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:14],
+        [self.status.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-14],
+        [self.status.bottomAnchor constraintLessThanOrEqualToAnchor:controls.topAnchor constant:-10],
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    CGRect area = CGRectInset(self.view.safeAreaLayoutGuide.layoutFrame, 8, 4);
-    CGFloat w = MAX(0, area.size.width), h = MAX(0, area.size.height);
-    BOOL landscape = self.view.bounds.size.width > self.view.bounds.size.height;
-    BOOL showControls = !self.controls.hidden;
-    self.controls.landscape = landscape;
-    self.controls.alpha = landscape ? [AZValue(@"AzaharControlOpacity",self.game) doubleValue]/100.0 : 1;
-    self.status.numberOfLines = landscape ? 1 : 3;
-    CGFloat statusHeight = landscape ? 18 : 42;
-    CGFloat contentHeight = MAX(0, h-statusHeight-4);
-    CGRect screen = CGRectMake(area.origin.x, area.origin.y, w, contentHeight);
-    if (showControls && landscape) {
-        // Overlay controls rather than sacrificing the game screen's width.
-        self.controls.frame = CGRectMake(area.origin.x, area.origin.y, w, contentHeight);
-    } else if (showControls) {
-        CGFloat deckHeight = MIN(190, contentHeight*0.44);
-        screen.size.height = MAX(0,contentHeight-deckHeight-4);
-        self.controls.frame = CGRectMake(area.origin.x, area.origin.y+screen.size.height+4,
-                                         w, deckHeight);
-    }
-    self.screen.frame = screen;
-    self.status.frame = CGRectMake(area.origin.x, area.origin.y+contentHeight+4, w, statusHeight);
-    [self updateDisplayGeometry];
-    [self.controls setNeedsLayout];
-}
-
-- (void)updateDisplayGeometry {
-    NSMutableDictionary *options = [AZLaunchOptions(self.game) mutableCopy];
-    NSDictionary *launch = self.host.launchOptions;
-    for (NSString *key in @[@"citra_layout_option", @"citra_swap_screen"]) {
-        if (launch[key]) options[key] = launch[key];
-    }
-    BOOL landscape = self.view.bounds.size.width > self.view.bounds.size.height;
-    [self.screen configureLandscape:landscape options:options];
-    CGFloat scale = self.view.window ? self.view.window.screen.scale : UIScreen.mainScreen.scale;
-    CGSize size = self.screen.bounds.size;
-    [self.host setDisplaySize:CGSizeMake(std::lround(size.width*scale),std::lround(size.height*scale))
-                    landscape:landscape options:options];
+        [controls.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+        [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        // Reserve the bottom-left safe area for the persistent build badge.
+        [controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-30],
+        [controls.heightAnchor constraintEqualToConstant:190]
+    ]];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self refreshControllerVisibility];
     if (self.started) {
         [self maybeStartRestart];
         [self refreshInput];
@@ -589,19 +409,19 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)startSessionWithOptions:(NSDictionary<NSString *, NSString *> *)options {
-    [self.screen displayFrame:nil];
+    [self.screen resetPresentation];
     self.status.text = @"Starting game…";
     self.host = [AzaharEmulator new];
     self.host.delegate = self;
     self.circlePad.host = self.host;
     self.screen.host = self.host;
     if ([options[@"citra_graphics_api"] isEqual:@"Vulkan"] &&
-        [options[@"AzaharPresentation"] isEqual:@"metal"])
+        [options[@"AzaharPresentation"] isEqual:@"metal"]) {
         self.host.metalLayer = [self.screen prepareMetal];
-    [self.view setNeedsLayout];
-    [self.view layoutIfNeeded];
-    [self updateDisplayGeometry];
-    [self.screen layoutIfNeeded];
+        [self.view layoutIfNeeded];
+        [self.screen setNeedsLayout];
+        [self.screen layoutIfNeeded];
+    }
     NSError *error = nil;
     if (![self.host startGameAtURL:self.game options:options error:&error]) {
         self.host = nil;
@@ -625,7 +445,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.circlePad centerStick];
 }
 - (void)appActive:(NSNotification *)note {
-    [self refreshControllerVisibility];
     [self maybeStartRestart];
     [self refreshInput];
 }
@@ -640,28 +459,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 - (void)audioReset:(NSNotification *)note { [self.host refreshAudioRoute]; }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
-
-- (void)showDisplayOptions {
-    if (self.leavingGame || self.restartPending || self.settingsOpen) return;
-    self.settingsOpen = YES;
-    self.settingsSnapshot = AZLaunchOptions(self.game);
-    [self refreshInput];
-    AZDisplayMenu *menu = [[AZDisplayMenu alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    menu.game = self.game;
-    menu.title = @"Display Options";
-    __weak AzaharGameViewController *weakSelf = self;
-    menu.changed = ^{
-        [weakSelf refreshControllerVisibility];
-        [weakSelf.view setNeedsLayout];
-        [weakSelf updateDisplayGeometry];
-    };
-    menu.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(closeSettings)];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:menu];
-    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    [self presentViewController:nav animated:YES completion:nil];
-    nav.presentationController.delegate = self;
-}
 
 - (void)showSettings {
     if (self.leavingGame || self.restartPending || self.settingsOpen) return;
@@ -735,8 +532,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     NSDictionary *after = AZLaunchOptions(self.game);
     BOOL changed = self.settingsSnapshot && AZLaunchOptionsRequireRestart(self.settingsSnapshot, after);
     self.settingsSnapshot = nil;
-    [self refreshControllerVisibility];
-    [self updateDisplayGeometry];
     [self refreshInput];
     if (changed && self.host) {
         // Core options are immutable for a running session. Do not tear down and
@@ -795,7 +590,6 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)press:(UIButton *)button {
-    if (self.controls.hidden) return;
     [self.host setButton:(unsigned)button.tag pressed:YES];
 }
 
@@ -806,12 +600,13 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 - (void)azaharEmulatorDidRenderImage:(UIImage *)image {
     if (self.leavingGame || self.restartPending) return;
     self.previousOptions = nil;
-    [self.screen displayFrame:image];
+    [self.screen displayCPUImage:image];
     // FPS callback updates the status once per second.
 }
 
 - (void)azaharEmulatorDidPresentMetalFrameWidth:(unsigned)width height:(unsigned)height {
     if (self.leavingGame || self.restartPending) return;
+    self.previousOptions = nil;
     [self.screen displayMetalWidth:width height:height];
 }
 

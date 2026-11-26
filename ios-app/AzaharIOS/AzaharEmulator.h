@@ -17,9 +17,9 @@
 @property (nonatomic, weak) id<AzaharEmulatorDelegate> delegate;
 @property (nonatomic, assign) BOOL experimentalJITEnabled;
 @property (nonatomic, readonly) BOOL jitActive;
-// Assigned on the main thread before launch; retained through worker teardown.
+// Retain the layer throughout the worker/core lifetime. Main thread sets its size.
 @property (nonatomic, strong) CAMetalLayer *metalLayer;
-- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options;
+- (void)setMetalDisplaySize:(CGSize)size;
 
 + (NSString *)sessionJITStatus;
 + (BOOL)hasActiveSession;

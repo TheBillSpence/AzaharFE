@@ -1,8 +1,8 @@
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
 #import "AZAudioOutput.h"
-#import "AZDisplayGeometry.h"
 #import <QuartzCore/CAMetalLayer.h>
+#include <algorithm>
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -145,9 +145,7 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_present_frame) _vkPresentFrame;
     bool _metalActive;
     unsigned _metalPending, _metalAttempts, _metalSubmitted, _metalWidth, _metalHeight;
-    CGSize _displaySize;
-    BOOL _displayLandscape;
-    NSDictionary *_displayOptions;
+    CGSize _metalDisplaySize;
     decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
     decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
@@ -248,12 +246,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (NSDictionary<NSString *, NSString *> *)launchOptions { @synchronized (self) { return _gameOptions; } }
 
 - (BOOL)jitActive { return _jitEnabled; }
-- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options {
-    @synchronized (self) {
-        _displaySize = size;
-        _displayLandscape = landscape;
-        _displayOptions = [options copy];
-    }
+- (void)setMetalDisplaySize:(CGSize)size {
+    @synchronized (self) { _metalDisplaySize = size; }
 }
 
 // Persist each stage before risky JIT debugger operations, because a stalled
@@ -708,6 +702,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _readbackAttempts = 0;
     _readbackPending = 0;
     _readbackMilliseconds = 0;
+    _metalAttempts = _metalSubmitted = 0;
     double coreRunMilliseconds = 0.0;
     uint64_t previousImages = 0;
     bool firstFrame = true;
@@ -736,6 +731,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             _readbackAttempts = 0;
             _readbackPending = 0;
             _readbackMilliseconds = 0;
+            _metalAttempts = _metalSubmitted = 0;
             previousImages = _deliveredImages.load();
         }
         if (_paused.load()) {
@@ -761,7 +757,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             firstFrame = false;
             performanceWindow = now;
             previousImages = _deliveredImages.load(std::memory_order_relaxed);
-            [self reportJITStage:@"7/7 First video frame received; measuring FPS"];
+            [self reportJITStage:@"7/7 First video frame received or submitted; measuring emulation FPS"];
         } else if (!firstFrame) {
             ++emulatedFrames;
             coreRunMilliseconds += coreRunMs;
@@ -769,7 +765,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (seconds >= 5.0) {
                 const auto images = _deliveredImages.load(std::memory_order_relaxed);
                 [self writeDiagnostic:[NSString stringWithFormat:
-                    @"Performance: %.1f emulated FPS, %.1f images/s delivered or submitted for display over %.1fs; mean retro_run %.1f ms",
+                    @"Performance: %.1f emulated FPS, %.1f CPU images/s delivered to view over %.1fs; mean retro_run %.1f ms",
                     emulatedFrames / seconds, (images - previousImages) / seconds, seconds,
                     coreRunMilliseconds / emulatedFrames]];
                 if (_readbackAttempts) {
@@ -779,9 +775,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 }
                 if (_metalAttempts) {
                     [self writeDiagnostic:[NSString stringWithFormat:
-                        @"Metal surface: %u attempts, %u frames submitted (not display scanout)", _metalAttempts, _metalSubmitted]];
-                    _metalAttempts = _metalSubmitted = 0;
+                        @"Metal surface: %u attempts, %u accepted submissions (%.1f/s); not unique game frames or measured display scanout",
+                        _metalAttempts, _metalSubmitted, _metalSubmitted / seconds]];
                 }
+                _metalAttempts = _metalSubmitted = 0;
                 _readbackAttempts = 0;
                 _readbackPending = 0;
                 _readbackMilliseconds = 0;
@@ -941,27 +938,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
     if (hardware && _metalActive) {
         CGSize size;
-        BOOL landscape;
-        NSDictionary *display;
-        @synchronized (self) {
-            size = _displaySize;
-            landscape = _displayLandscape;
-            display = _displayOptions ?: _gameOptions;
-        }
-        const auto geometry = AZMakeDisplayGeometry(CGSizeMake(width,height), size, landscape, display);
-        if (geometry.count && size.width >= 1 && size.height >= 1) {
-            float rects[16]{};
-            for (unsigned n=0; n<geometry.count; ++n) {
-                const CGRect src = geometry.source[n], dst = geometry.destination[n];
-                float *r = rects+n*8;
-                r[0]=CGRectGetMinX(src); r[1]=CGRectGetMinY(src);
-                r[2]=CGRectGetMaxX(src); r[3]=CGRectGetMaxY(src);
-                r[4]=CGRectGetMinX(dst)/size.width; r[5]=CGRectGetMinY(dst)/size.height;
-                r[6]=CGRectGetMaxX(dst)/size.width; r[7]=CGRectGetMaxY(dst)/size.height;
-            }
+        @synchronized (self) { size = _metalDisplaySize; }
+        if (size.width >= 1 && size.height >= 1) {
+            // Match the existing UIImageView aspect-fit and original touchscreen mapping.
+            const double scale = std::min(size.width / width, size.height / height);
+            const double w = width * scale / size.width, h = height * scale / size.height;
+            const float rect[] = {0, 0, 1, 1, float((1-w)/2), float((1-h)/2),
+                                 float((1+w)/2), float((1+h)/2)};
             ++_metalAttempts;
             const int result = _vkPresentFrame(width, height, (unsigned)std::lround(size.width),
-                                               (unsigned)std::lround(size.height), rects, geometry.count);
+                                               (unsigned)std::lround(size.height), rect, 1);
             if (result == 1) {
                 ++_metalSubmitted;
                 _metalPending = 0;
@@ -972,7 +958,6 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     [self reportJITStage:[NSString stringWithFormat:
                         @"First GPU-only Metal surface submission: %u x %u", width, height]];
                 }
-                _deliveredImages.fetch_add(1, std::memory_order_relaxed);
                 if (_metalWidth != width || _metalHeight != height) {
                     _metalWidth=width; _metalHeight=height;
                     dispatch_async(dispatch_get_main_queue(), ^{
