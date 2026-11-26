@@ -1,6 +1,8 @@
 #import "AzaharEmulator.h"
 #import "AZPreferences.h"
 #import "AZAudioOutput.h"
+#import "AZDisplayGeometry.h"
+#import <QuartzCore/CAMetalLayer.h>
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -139,6 +141,13 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_readback) _vkReadback;
     decltype(&azahar_ios_vk_readback_frame) _vkReadbackFrame;
     unsigned _readbackPending;
+    decltype(&azahar_ios_vk_set_metal_layer) _vkSetMetalLayer;
+    decltype(&azahar_ios_vk_present_frame) _vkPresentFrame;
+    bool _metalActive;
+    unsigned _metalPending, _metalAttempts, _metalSubmitted, _metalWidth, _metalHeight;
+    CGSize _displaySize;
+    BOOL _displayLandscape;
+    NSDictionary *_displayOptions;
     decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
     decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
@@ -239,6 +248,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (NSDictionary<NSString *, NSString *> *)launchOptions { @synchronized (self) { return _gameOptions; } }
 
 - (BOOL)jitActive { return _jitEnabled; }
+- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options {
+    @synchronized (self) {
+        _displaySize = size;
+        _displayLandscape = landscape;
+        _displayOptions = [options copy];
+    }
+}
 
 // Persist each stage before risky JIT debugger operations, because a stalled
 // breakpoint may stop every process thread before a UI message can repaint.
@@ -374,6 +390,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _vkNegotiation = nullptr;
         _vkInterface = nullptr;
         _vkRequested = false;
+        _metalActive = false;
+        _metalPending = _metalAttempts = _metalSubmitted = _metalWidth = _metalHeight = 0;
         _readbackFailures = 0;
         _playSession = [NSObject new];
         _completedSlices.store(0);
@@ -524,6 +542,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_readback"));
         _vkReadbackFrame = reinterpret_cast<decltype(_vkReadbackFrame)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback_frame"));
+        _vkSetMetalLayer = reinterpret_cast<decltype(_vkSetMetalLayer)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_set_metal_layer"));
+        _vkPresentFrame = reinterpret_cast<decltype(_vkPresentFrame)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_present_frame"));
         _vkReadbackFailed = reinterpret_cast<decltype(_vkReadbackFailed)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback_failed"));
         _vkDrainReadback = reinterpret_cast<decltype(_vkDrainReadback)>(
@@ -654,6 +676,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         !_vkDrainReadback || !_vkShutdown || !_vkGameLoaded ||
         !_vkNegotiation || !_vkRenderCallback.context_reset) return NO;
     try {
+        _metalActive = _vkSetMetalLayer && _vkPresentFrame && self.metalLayer &&
+            [self.launchOptions[@"AzaharPresentation"] isEqual:@"metal"];
+        if (_metalActive) _vkSetMetalLayer((__bridge void *)self.metalLayer);
         if (!_vkStart(_vkNegotiation)) return NO;
         _vkInterface = const_cast<void *>(_vkGetInterface());
         if (!_vkInterface) return NO;
@@ -744,13 +769,18 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (seconds >= 5.0) {
                 const auto images = _deliveredImages.load(std::memory_order_relaxed);
                 [self writeDiagnostic:[NSString stringWithFormat:
-                    @"Performance: %.1f emulated FPS, %.1f images/s delivered to view over %.1fs; mean retro_run %.1f ms",
+                    @"Performance: %.1f emulated FPS, %.1f images/s delivered or submitted for display over %.1fs; mean retro_run %.1f ms",
                     emulatedFrames / seconds, (images - previousImages) / seconds, seconds,
                     coreRunMilliseconds / emulatedFrames]];
                 if (_readbackAttempts) {
                     [self writeDiagnostic:[NSString stringWithFormat:
                         @"MoltenVK readback: %u calls, %u pending, mean %.2f ms per call",
                         _readbackAttempts, _readbackPending, _readbackMilliseconds / _readbackAttempts]];
+                }
+                if (_metalAttempts) {
+                    [self writeDiagnostic:[NSString stringWithFormat:
+                        @"Metal surface: %u attempts, %u frames submitted (not display scanout)", _metalAttempts, _metalSubmitted]];
+                    _metalAttempts = _metalSubmitted = 0;
                 }
                 _readbackAttempts = 0;
                 _readbackPending = 0;
@@ -907,8 +937,61 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
     if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
-        _stopping.load() || _paused.load() || _frameQueued.exchange(true)) return;
+        _stopping.load() || _paused.load()) return;
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
+    if (hardware && _metalActive) {
+        CGSize size;
+        BOOL landscape;
+        NSDictionary *display;
+        @synchronized (self) {
+            size = _displaySize;
+            landscape = _displayLandscape;
+            display = _displayOptions ?: _gameOptions;
+        }
+        const auto geometry = AZMakeDisplayGeometry(CGSizeMake(width,height), size, landscape, display);
+        if (geometry.count && size.width >= 1 && size.height >= 1) {
+            float rects[16]{};
+            for (unsigned n=0; n<geometry.count; ++n) {
+                const CGRect src = geometry.source[n], dst = geometry.destination[n];
+                float *r = rects+n*8;
+                r[0]=CGRectGetMinX(src); r[1]=CGRectGetMinY(src);
+                r[2]=CGRectGetMaxX(src); r[3]=CGRectGetMaxY(src);
+                r[4]=CGRectGetMinX(dst)/size.width; r[5]=CGRectGetMinY(dst)/size.height;
+                r[6]=CGRectGetMaxX(dst)/size.width; r[7]=CGRectGetMaxY(dst)/size.height;
+            }
+            ++_metalAttempts;
+            const int result = _vkPresentFrame(width, height, (unsigned)std::lround(size.width),
+                                               (unsigned)std::lround(size.height), rects, geometry.count);
+            if (result == 1) {
+                ++_metalSubmitted;
+                _metalPending = 0;
+                _readbackFailures = 0;
+                if (!_receivedFirstVideo) {
+                    _receivedFirstVideo = YES;
+                    _waitingForFirstFrame.store(false);
+                    [self reportJITStage:[NSString stringWithFormat:
+                        @"First GPU-only Metal surface submission: %u x %u", width, height]];
+                }
+                _deliveredImages.fetch_add(1, std::memory_order_relaxed);
+                if (_metalWidth != width || _metalHeight != height) {
+                    _metalWidth=width; _metalHeight=height;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        id<AzaharEmulatorDelegate> delegate = self.delegate;
+                        if (!_stopping.load() &&
+                            [delegate respondsToSelector:@selector(azaharEmulatorDidPresentMetalFrameWidth:height:)])
+                            [delegate azaharEmulatorDidPresentMetalFrameWidth:width height:height];
+                    });
+                }
+                return;
+            }
+            if (result == 0 && ++_metalPending < 120) return;
+        } else if (++_metalPending < 120) {
+            return;
+        }
+        _metalActive = false;
+        [self reportJITStage:@"Direct Metal surface unavailable or busy; using Vulkan CPU readback"];
+    }
+    if (_frameQueued.exchange(true)) return;
     bool rgba = false;
     if (hardware) {
         const auto started = std::chrono::steady_clock::now();

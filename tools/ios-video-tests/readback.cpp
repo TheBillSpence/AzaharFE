@@ -158,6 +158,9 @@ int main() {
         Check(azahar_ios_vk_start(&setup), "start bridge");
         const auto* vk = static_cast<const retro_hw_render_interface_vulkan*>(azahar_ios_vk_get_interface());
         Check(vk != nullptr, "live interface");
+        const float rectangle[] = {0, 0, 1, 1, 0, 0, 1, 1};
+        Check(azahar_ios_vk_present_frame(3, 5, 3, 5, rectangle, 1) == -1,
+              "headless presentation falls back");
         CheckFrames(*vk, format, false);
         CheckFrames(*vk, format, true);
         azahar_ios_vk_shutdown();

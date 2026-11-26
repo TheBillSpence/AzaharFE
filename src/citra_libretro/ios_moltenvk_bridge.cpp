@@ -16,6 +16,9 @@
 #include <mutex>
 #include <vector>
 #include <vulkan/vulkan.h>
+#if defined(__APPLE__)
+#include <vulkan/vulkan_metal.h>
+#endif
 #include "libretro_vulkan.h"
 
 namespace {
@@ -55,6 +58,24 @@ struct Context {
     retro_hw_render_interface_vulkan interface{};
     std::mutex queue_mutex;
     std::vector<std::uint8_t> pixels;
+#if defined(__APPLE__)
+    void* metal_layer = nullptr;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkExtent2D extent{};
+    VkFormat surface_format = VK_FORMAT_UNDEFINED;
+    unsigned requested_width = 0, requested_height = 0;
+    bool rebuild_surface = false;
+    struct PresentSlot {
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        VkSemaphore acquired = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        bool pending = false;
+    };
+    std::array<PresentSlot, 3> present_slots{};
+    std::vector<VkImage> present_images;
+    std::vector<VkSemaphore> present_ready;
+#endif
 } state;
 
 bool HasInstanceExtension(const char* name) {
@@ -257,7 +278,116 @@ bool ReadPixels(StagingSlot& slot, const void** pixels, std::size_t* pitch, bool
     state.delivered = true;
     return true;
 }
+#if defined(__APPLE__)
+void DestroySwapchain() {
+    // All use of the drawable images and semaphores has finished.
+    for (auto semaphore : state.present_ready)
+        vkDestroySemaphore(state.device, semaphore, nullptr);
+    state.present_ready.clear();
+    state.present_images.clear();
+    if (state.swapchain)
+        vkDestroySwapchainKHR(state.device, state.swapchain, nullptr);
+    state.swapchain = VK_NULL_HANDLE;
+    state.extent = {};
+}
+
+bool CreateSwapchain(unsigned width, unsigned height) {
+    if (!state.surface || !state.device || !width || !height)
+        return false;
+    if (state.swapchain) {
+        // Resizing is rare. Never release drawable resources still owned by the GPU.
+        std::lock_guard lock{state.queue_mutex};
+        if (vkQueueWaitIdle(state.queue) != VK_SUCCESS)
+            return false;
+        DestroySwapchain();
+        for (auto& slot : state.present_slots)
+            slot.pending = false;
+    }
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(state.gpu, state.surface, &caps) != VK_SUCCESS ||
+        !(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+        return false;
+    uint32_t count = 0;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(state.gpu, state.surface, &count, nullptr) != VK_SUCCESS ||
+        !count)
+        return false;
+    std::vector<VkSurfaceFormatKHR> formats(count);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(state.gpu, state.surface, &count, formats.data()) != VK_SUCCESS)
+        return false;
+    VkSurfaceFormatKHR chosen{};
+    for (const auto& format : formats) {
+        if ((format.format == VK_FORMAT_B8G8R8A8_UNORM ||
+             format.format == VK_FORMAT_R8G8B8A8_UNORM ||
+             format.format == VK_FORMAT_UNDEFINED) &&
+            format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            chosen = format;
+            if (chosen.format == VK_FORMAT_UNDEFINED)
+                chosen.format = VK_FORMAT_B8G8R8A8_UNORM;
+            break;
+        }
+    }
+    if (chosen.format == VK_FORMAT_UNDEFINED)
+        return false;
+    VkFormatProperties src{}, dst{};
+    vkGetPhysicalDeviceFormatProperties(state.gpu, state.image_format, &src);
+    vkGetPhysicalDeviceFormatProperties(state.gpu, chosen.format, &dst);
+    if (!(src.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+        !(dst.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        return false;
+    state.extent = caps.currentExtent.width != UINT32_MAX
+                       ? caps.currentExtent
+                       : VkExtent2D{std::clamp(width, caps.minImageExtent.width, caps.maxImageExtent.width),
+                                    std::clamp(height, caps.minImageExtent.height, caps.maxImageExtent.height)};
+    if (!state.extent.width || !state.extent.height)
+        return false;
+    const uint32_t image_count = std::max(3u, caps.minImageCount);
+    VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    info.surface = state.surface;
+    info.minImageCount = caps.maxImageCount ? std::min(image_count, caps.maxImageCount) : image_count;
+    info.imageFormat = chosen.format;
+    info.imageColorSpace = chosen.colorSpace;
+    info.imageExtent = state.extent;
+    info.imageArrayLayers = 1;
+    info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.preTransform = caps.currentTransform;
+    info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+                              ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+                              : static_cast<VkCompositeAlphaFlagBitsKHR>(
+                                    caps.supportedCompositeAlpha & (~caps.supportedCompositeAlpha + 1));
+    info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    info.clipped = VK_TRUE;
+    if (vkCreateSwapchainKHR(state.device, &info, nullptr, &state.swapchain) != VK_SUCCESS)
+        return false;
+    count = 0;
+    if (vkGetSwapchainImagesKHR(state.device, state.swapchain, &count, nullptr) != VK_SUCCESS || !count)
+        return false;
+    state.present_images.resize(count);
+    if (vkGetSwapchainImagesKHR(state.device, state.swapchain, &count, state.present_images.data()) != VK_SUCCESS)
+        return false;
+    state.present_images.resize(count);
+    state.present_ready.resize(count);
+    VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (auto& ready : state.present_ready)
+        if (vkCreateSemaphore(state.device, &semaphore, nullptr, &ready) != VK_SUCCESS)
+            return false;
+    state.surface_format = chosen.format;
+    state.requested_width = width;
+    state.requested_height = height;
+    state.rebuild_surface = false;
+    return true;
+}
+#endif
 } // namespace
+
+extern "C" void azahar_ios_vk_set_metal_layer(void* layer) {
+#if defined(__APPLE__)
+    if (!state.instance)
+        state.metal_layer = layer;
+#else
+    (void)layer;
+#endif
+}
 
 extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
     if (!opaque_negotiation || state.instance)
@@ -270,15 +400,25 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
         return false;
 
     const bool portable = HasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-    const char* extensions[] = {VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME};
+    std::vector<const char*> extensions;
+    if (portable)
+        extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#if defined(__APPLE__)
+    const bool metal = state.metal_layer && HasInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME) &&
+                       HasInstanceExtension(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+    if (metal) {
+        extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+    }
+#endif
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     application.pApplicationName = "AzaharFE iOS Vulkan";
     application.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     create.pApplicationInfo = &application;
     create.flags = portable ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
-    create.enabledExtensionCount = portable ? 1u : 0u;
-    create.ppEnabledExtensionNames = portable ? extensions : nullptr;
+    create.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    create.ppEnabledExtensionNames = extensions.data();
     if (vkCreateInstance(&create, nullptr, &state.instance) != VK_SUCCESS)
         return false;
 
@@ -295,10 +435,30 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
     }
     state.gpu = gpus[0];
 
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+#if defined(__APPLE__)
+    if (metal) {
+        auto create_surface = reinterpret_cast<PFN_vkCreateMetalSurfaceEXT>(
+            vkGetInstanceProcAddr(state.instance, "vkCreateMetalSurfaceEXT"));
+        VkMetalSurfaceCreateInfoEXT info{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
+        info.pLayer = static_cast<const CAMetalLayer*>(state.metal_layer);
+        if (create_surface && create_surface(state.instance, &info, nullptr, &state.surface) == VK_SUCCESS)
+            surface = state.surface;
+    }
+#endif
     retro_vulkan_context context{};
-    if (!negotiation->create_device(&context, state.instance, state.gpu, VK_NULL_HANDLE,
-                                    vkGetInstanceProcAddr, nullptr, 0, nullptr, 0, nullptr) ||
-        !context.device || !context.queue) {
+    bool created = negotiation->create_device(&context, state.instance, state.gpu, surface,
+                                               vkGetInstanceProcAddr, nullptr, 0, nullptr, 0, nullptr);
+#if defined(__APPLE__)
+    if (!created && surface) {
+        vkDestroySurfaceKHR(state.instance, state.surface, nullptr);
+        state.surface = VK_NULL_HANDLE;
+        context = {};
+        created = negotiation->create_device(&context, state.instance, state.gpu, VK_NULL_HANDLE,
+                                              vkGetInstanceProcAddr, nullptr, 0, nullptr, 0, nullptr);
+    }
+#endif
+    if (!created || !context.device || !context.queue) {
         azahar_ios_vk_shutdown();
         return false;
     }
@@ -328,6 +488,24 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
         }
     }
 
+#if defined(__APPLE__)
+    if (state.surface) {
+        VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        bool complete = true;
+        for (auto& slot : state.present_slots) {
+            if (vkAllocateCommandBuffers(state.device, &alloc, &slot.command) != VK_SUCCESS ||
+                vkCreateFence(state.device, &fence, nullptr, &slot.fence) != VK_SUCCESS ||
+                vkCreateSemaphore(state.device, &semaphore, nullptr, &slot.acquired) != VK_SUCCESS) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) {
+            vkDestroySurfaceKHR(state.instance, state.surface, nullptr);
+            state.surface = VK_NULL_HANDLE;
+        }
+    }
+#endif
     auto& intf = state.interface;
     intf.interface_type = RETRO_HW_RENDER_INTERFACE_VULKAN;
     intf.interface_version = RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION;
@@ -432,11 +610,158 @@ extern "C" bool azahar_ios_vk_readback(unsigned width, unsigned height, const vo
     return true;
 }
 
+extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsigned drawable_width,
+                                          unsigned drawable_height, const float* rectangles,
+                                          unsigned count) {
+#if defined(__APPLE__)
+    if (!state.surface || !state.device || !state.image || state.device_failed || !rectangles ||
+        !width || !height || !count || count > 2 || !drawable_width || !drawable_height)
+        return -1;
+    if (!state.swapchain || state.rebuild_surface || state.requested_width != drawable_width ||
+        state.requested_height != drawable_height) {
+        if (!CreateSwapchain(drawable_width, drawable_height))
+            return -1;
+    }
+    Context::PresentSlot* slot = nullptr;
+    for (auto& candidate : state.present_slots) {
+        if (candidate.pending) {
+            const auto result = vkGetFenceStatus(state.device, candidate.fence);
+            if (result == VK_SUCCESS)
+                candidate.pending = false;
+            else if (result != VK_NOT_READY)
+                return -1;
+        }
+        if (!candidate.pending && !slot)
+            slot = &candidate;
+    }
+    if (!slot)
+        return 0;
+    uint32_t index = 0;
+    const auto acquire = vkAcquireNextImageKHR(state.device, state.swapchain, 0,
+                                               slot->acquired, VK_NULL_HANDLE, &index);
+    if (acquire == VK_NOT_READY || acquire == VK_TIMEOUT)
+        return 0;
+    if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
+        state.rebuild_surface = true;
+        return 0;
+    }
+    if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
+        return -1;
+    if (index >= state.present_images.size())
+        return -1;
+    auto command = slot->command;
+    if (vkResetCommandBuffer(command, 0) != VK_SUCCESS ||
+        vkResetFences(state.device, 1, &slot->fence) != VK_SUCCESS)
+        return -1;
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(command, &begin) != VK_SUCCESS)
+        return -1;
+    VkImageMemoryBarrier barriers[2]{};
+    for (auto& barrier : barriers) {
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    }
+    auto& source = barriers[0];
+    source.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    source.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    source.oldLayout = state.image_layout;
+    source.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    source.image = state.image;
+    auto& dest = barriers[1];
+    dest.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dest.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    dest.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dest.image = state.present_images[index];
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, barriers);
+    VkClearColorValue black{};
+    black.float32[3] = 1.0f;
+    vkCmdClearColorImage(command, dest.image, dest.newLayout, &black, 1, &dest.subresourceRange);
+    VkImageMemoryBarrier cleared = dest;
+    cleared.oldLayout = cleared.newLayout;
+    cleared.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &cleared);
+    auto pixel = [](float v, unsigned size) {
+        return static_cast<int32_t>(std::clamp(v, 0.0f, 1.0f) * size + 0.5f);
+    };
+    for (unsigned n = 0; n < count; ++n) {
+        const float* r = rectangles + n * 8;
+        VkImageBlit blit{};
+        blit.srcSubresource = blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[0] = {pixel(r[0], width), pixel(r[1], height), 0};
+        blit.srcOffsets[1] = {pixel(r[2], width), pixel(r[3], height), 1};
+        blit.dstOffsets[0] = {pixel(r[4], state.extent.width), pixel(r[5], state.extent.height), 0};
+        blit.dstOffsets[1] = {pixel(r[6], state.extent.width), pixel(r[7], state.extent.height), 1};
+        if (blit.srcOffsets[1].x > blit.srcOffsets[0].x &&
+            blit.srcOffsets[1].y > blit.srcOffsets[0].y &&
+            blit.dstOffsets[1].x > blit.dstOffsets[0].x &&
+            blit.dstOffsets[1].y > blit.dstOffsets[0].y)
+            vkCmdBlitImage(command, source.image, source.newLayout, dest.image, dest.newLayout,
+                           1, &blit, VK_FILTER_NEAREST);
+    }
+    source.oldLayout = source.newLayout;
+    source.newLayout = state.image_layout;
+    source.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    source.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    dest.oldLayout = dest.newLayout;
+    dest.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    dest.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dest.dstAccessMask = 0;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, barriers);
+    if (vkEndCommandBuffer(command) != VK_SUCCESS)
+        return -1;
+    const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkSemaphore ready = state.present_ready[index];
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &slot->acquired;
+    submit.pWaitDstStageMask = &stage;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &ready;
+    VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.waitSemaphoreCount = 1;
+    present.pWaitSemaphores = &ready;
+    present.swapchainCount = 1;
+    present.pSwapchains = &state.swapchain;
+    present.pImageIndices = &index;
+    std::lock_guard lock{state.queue_mutex};
+    if (vkQueueSubmit(state.queue, 1, &submit, slot->fence) != VK_SUCCESS)
+        return -1;
+    slot->pending = true;
+    const auto result = vkQueuePresentKHR(state.queue, &present);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        state.rebuild_surface = true;
+        return 0;
+    }
+    return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ? 1 : -1;
+#else
+    (void)width; (void)height; (void)drawable_width; (void)drawable_height;
+    (void)rectangles; (void)count;
+    return -1;
+#endif
+}
+
 extern "C" bool azahar_ios_vk_readback_failed() {
     return state.device_failed;
 }
 
 extern "C" bool azahar_ios_vk_drain_readback() {
+#if defined(__APPLE__)
+    for (auto& slot : state.present_slots) {
+        if (!slot.pending)
+            continue;
+        const auto result = vkWaitForFences(state.device, 1, &slot.fence, VK_TRUE, 1'000'000'000ULL);
+        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST)
+            return false;
+        slot.pending = false;
+    }
+#endif
     for (auto& slot : state.slots) {
         if (!slot.pending)
             continue;
@@ -452,6 +777,14 @@ extern "C" void azahar_ios_vk_shutdown() {
     if (state.device) {
         std::lock_guard lock{state.queue_mutex};
         vkDeviceWaitIdle(state.device);
+#if defined(__APPLE__)
+        DestroySwapchain();
+        for (auto& slot : state.present_slots) {
+            vkDestroySemaphore(state.device, slot.acquired, nullptr);
+            vkDestroyFence(state.device, slot.fence, nullptr);
+        }
+        state.present_slots = {};
+#endif
         for (auto& slot : state.slots) {
             ReleaseStagingBuffer(slot);
             vkDestroyFence(state.device, slot.copied, nullptr);
@@ -460,6 +793,14 @@ extern "C" void azahar_ios_vk_shutdown() {
             vkDestroyCommandPool(state.device, state.command_pool, nullptr);
         vkDestroyDevice(state.device, nullptr);
     }
+#if defined(__APPLE__)
+    if (state.surface)
+        vkDestroySurfaceKHR(state.instance, state.surface, nullptr);
+    state.surface = VK_NULL_HANDLE;
+    state.metal_layer = nullptr;
+    state.requested_width = state.requested_height = 0;
+    state.rebuild_surface = false;
+#endif
     if (state.instance)
         vkDestroyInstance(state.instance, nullptr);
     state.slots = {};

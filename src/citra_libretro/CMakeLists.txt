@@ -88,6 +88,7 @@ if(AZAHAR_IOS_MOLTENVK_BRIDGE)
   # Offscreen Vulkan/MoltenVK bridge: core owns its device and returns a
   # host-visible output frame to the existing iOS UIImage frontend.
   target_compile_definitions(citra_libretro PRIVATE AZAHAR_IOS_MOLTENVK_BRIDGE)
+  target_compile_definitions(citra_libretro_common PRIVATE AZAHAR_IOS_MOLTENVK_BRIDGE)
   target_sources(citra_libretro PRIVATE ios_moltenvk_bridge.cpp ios_moltenvk_bridge.h)
 endif()
 
@@ -116,7 +117,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
           "_azahar_ios_vk_start\n_azahar_ios_vk_get_interface\n"
           "_azahar_ios_vk_readback\n_azahar_ios_vk_readback_frame\n_azahar_ios_vk_readback_failed\n"
           "_azahar_ios_vk_drain_readback\n_azahar_ios_vk_shutdown\n"
-          "_azahar_ios_vk_game_loaded\n")
+          "_azahar_ios_vk_game_loaded\n_azahar_ios_vk_set_metal_layer\n"
+          "_azahar_ios_vk_present_frame\n")
     endif()
   endif()
   target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${LIBRETRO_EXPORTS_FILE}")

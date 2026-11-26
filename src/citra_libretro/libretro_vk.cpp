@@ -94,8 +94,9 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     }
 
     // Add extensions we want (if available)
-    if (surface)
-        AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (surface &&
+        !AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return false;
     AddExtensionIfAvailable(enabled_exts, available_exts, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
     AddExtensionIfAvailable(enabled_exts, available_exts,
                             VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
@@ -144,8 +145,16 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queue_family_count, queue_families.data());
 
+    auto surface_support = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
+        get_instance_proc_addr(instance, "vkGetPhysicalDeviceSurfaceSupportKHR"));
     uint32_t graphics_queue_family = VK_QUEUE_FAMILY_IGNORED;
     for (uint32_t i = 0; i < queue_family_count; i++) {
+        if (surface) {
+            VkBool32 supported = VK_FALSE;
+            if (!surface_support ||
+                surface_support(gpu, i, surface, &supported) != VK_SUCCESS || !supported)
+                continue;
+        }
         if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             graphics_queue_family = i;
             break;
@@ -686,6 +695,11 @@ void PresentWindow::RecreateFrame(Frame* frame, u32 width, u32 height) {
     [[maybe_unused]] const vk::Result wait_result =
         device.waitForFences(frame->present_done, VK_TRUE, UINT64_MAX);
 
+#if defined(IOS) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+    // Frontend GPU copies may still reference the old shared output image.
+    // The scheduler is finished here; wait on the worker before destroying it.
+    device.waitIdle();
+#endif
     DestroyFrameResources();
     // Recreate output texture with new dimensions
     CreateOutputTexture(width, height);

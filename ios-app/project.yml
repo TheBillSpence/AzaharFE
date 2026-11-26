@@ -18,6 +18,8 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: AudioToolbox.framework
       - sdk: ImageIO.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thebillspence.azaharios.superexperimental

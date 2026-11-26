@@ -1,5 +1,6 @@
 #import "AZOptions.h"
 #include "AZControllerInput.h"
+#include "AZDisplayGeometry.h"
 #include <cassert>
 
 int main() {
@@ -31,7 +32,24 @@ int main() {
         assert([AZLaunchOptions(game)[@"AzaharShaderJIT"] isEqual:@"on"]);
         AZResetGameOptions(game);
         NSDictionary *before = AZLaunchOptions(game);
+        assert([before[@"AzaharPresentation"] isEqual:@"metal"]);
+        assert([before[@"AzaharLandscapeLayout"] isEqual:@"corner"]);
+        assert(![AZOptionKeys() containsObject:@"AzaharDisplayFPS"]);
+        NSMutableDictionary *display = [before mutableCopy];
+        display[@"citra_layout_option"] = @"default";
+        display[@"citra_swap_screen"] = @"Top";
+        const auto corner = AZMakeDisplayGeometry(CGSizeMake(1600,1920),CGSizeMake(800,350),YES,display);
+        assert(corner.count == 2 && corner.touchIndex == 1);
+        assert(std::abs(corner.destination[0].size.width / corner.destination[0].size.height - 5.0/3) < 0.001);
+        assert(CGRectGetMinX(corner.destination[1]) > CGRectGetMaxX(corner.destination[0]));
+        display[@"AzaharLandscapeLayout"] = @"stacked";
+        const auto stacked = AZMakeDisplayGeometry(CGSizeMake(1600,1920),CGSizeMake(800,350),YES,display);
+        assert(stacked.count == 2 && CGRectGetMinY(stacked.destination[1]) > CGRectGetMaxY(stacked.destination[0]));
+
         assert(!AZLaunchOptionsRequireRestart(before, [before copy]));
+        NSMutableDictionary *live = [before mutableCopy];
+        live[@"AzaharLandscapeLayout"] = @"stacked";
+        assert(!AZLaunchOptionsRequireRestart(before, live));
         NSMutableDictionary *after = [before mutableCopy];
         after[@"citra_graphics_api"] = [before[@"citra_graphics_api"] isEqual:@"Vulkan"] ? @"Software" : @"Vulkan";
         assert(AZLaunchOptionsRequireRestart(before, after));

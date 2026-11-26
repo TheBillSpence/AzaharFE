@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+@class CAMetalLayer;
 
 @class AzaharEmulator;
 
@@ -8,6 +9,7 @@
 - (void)azaharEmulatorDidChangeJITStatus:(NSString *)status;
 - (void)azaharEmulatorDidMeasureFPS:(double)fps jitActive:(BOOL)jitActive;
 @optional
+- (void)azaharEmulatorDidPresentMetalFrameWidth:(unsigned)width height:(unsigned)height;
 - (void)azaharEmulatorDidFinish:(AzaharEmulator *)emulator;
 @end
 
@@ -15,6 +17,9 @@
 @property (nonatomic, weak) id<AzaharEmulatorDelegate> delegate;
 @property (nonatomic, assign) BOOL experimentalJITEnabled;
 @property (nonatomic, readonly) BOOL jitActive;
+// Assigned on the main thread before launch; retained through worker teardown.
+@property (nonatomic, strong) CAMetalLayer *metalLayer;
+- (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options;
 
 + (NSString *)sessionJITStatus;
 + (BOOL)hasActiveSession;

@@ -2,6 +2,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSArray<NSString *> *AZOptionKeys(void);
+FOUNDATION_EXPORT NSArray<NSString *> *AZDisplayKeys(void);
 FOUNDATION_EXPORT NSString *AZOptionTitle(NSString *key);
 FOUNDATION_EXPORT NSArray<NSString *> *AZChoices(NSString *key);
 FOUNDATION_EXPORT NSString *AZChoiceTitle(NSString *key, NSString *value);

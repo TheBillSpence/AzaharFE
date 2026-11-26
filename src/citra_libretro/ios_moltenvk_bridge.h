@@ -9,6 +9,13 @@
 extern "C" {
 __attribute__((visibility("default"))) bool azahar_ios_vk_start(const void* negotiation);
 __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface();
+// The frontend retains the CAMetalLayer for the full core lifetime. Rectangles
+// contain normalized source and destination corners (8 floats per rectangle).
+// 1: submitted for display, 0: busy, -1: use CPU readback instead.
+__attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* layer);
+__attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
+    unsigned width, unsigned height, unsigned drawable_width, unsigned drawable_height,
+    const float* rectangles, unsigned count);
 __attribute__((visibility("default"))) bool azahar_ios_vk_readback(unsigned width, unsigned height,
                                                                    const void** pixels,
                                                                    std::size_t* pitch);
