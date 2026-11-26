@@ -139,8 +139,13 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
                                                     : "SW27 rasterizer=reference");
 #endif
 #if defined(IOS) && defined(AZAHAR_SUPER_EXPERIMENTAL) && defined(__aarch64__)
-    if (optimize_rasterization && LibRetro::CanUseJIT() &&
-        LibRetro::FetchVariable("AzaharShaderJIT", "off") == "on") {
+    if (!optimize_rasterization) {
+        LibRetro::DisplayMessage("SUPER27 fragment JIT disabled: reference rasterizer");
+    } else if (!LibRetro::CanUseJIT()) {
+        LibRetro::DisplayMessage("SUPER27 fragment JIT disabled: JIT permission unavailable");
+    } else if (LibRetro::FetchVariable("AzaharShaderJIT", "off") != "on") {
+        LibRetro::DisplayMessage("SUPER27 fragment JIT disabled: shader JIT option off");
+    } else {
         fragment_jit = std::make_unique<IOSFragmentJit>();
         LibRetro::DisplayMessage("SUPER27 fragment JIT: full TEV compiler v2");
     }

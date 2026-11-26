@@ -852,10 +852,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                         [self reportJITStage:text];
                     } else if ([text hasPrefix:@"SHADER27 "]) {
                         [self reportJITStage:[text substringFromIndex:9]];
-                    } else if ([text hasPrefix:@"PERF27 "]) {
-                        // PERF27 is diagnostic output, not a JIT state change.
-                        // Persist it alongside JIT27TRACE so Settings -> Log Data
-                        // contains the on-device CPU/GPU/HLE profiler reports.
+                    } else if ([text hasPrefix:@"PERF27 "] || [text hasPrefix:@"SUPER27 "] ||
+                               [text hasPrefix:@"SW27 "]) {
+                        // Persist profiler and experimental renderer diagnostics without
+                        // changing the frontend JIT lifecycle state.
                         [self writeDiagnostic:text];
                     } else if (text) {
                         @synchronized (self) { _lastMessage = text; }
