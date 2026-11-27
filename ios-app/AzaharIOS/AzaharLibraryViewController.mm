@@ -395,6 +395,11 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pendingOptions;
 @property (nonatomic) BOOL audioInterrupted;
 @property (nonatomic, strong) UILabel *status;
+@property (nonatomic, strong) UIView *compactToolbar;
+@property (nonatomic, strong) UIButton *compactBack;
+@property (nonatomic, strong) UIButton *compactDisplay;
+@property (nonatomic, strong) UIButton *compactSettings;
+@property (nonatomic, strong) UIButton *compactStop;
 @property (nonatomic, assign) BOOL started;
 @end
 
@@ -431,6 +436,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
     [notifications addObserver:self selector:@selector(appInactive:) name:UIApplicationWillResignActiveNotification object:nil];
     [notifications addObserver:self selector:@selector(appActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [notifications addObserver:self selector:@selector(screenshotTaken:) name:UIApplicationUserDidTakeScreenshotNotification object:nil];
     [notifications addObserver:self selector:@selector(audioInterrupted:) name:AVAudioSessionInterruptionNotification object:nil];
     [notifications addObserver:self selector:@selector(audioReset:) name:AVAudioSessionMediaServicesWereResetNotification object:nil];
     [notifications addObserver:self selector:@selector(controllerChanged:) name:GCControllerDidConnectNotification object:nil];
@@ -506,7 +512,51 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         [controls addSubview:button];
     }
 
+    self.compactToolbar = [UIView new];
+    self.compactToolbar.backgroundColor = [UIColor colorWithWhite:0.045 alpha:1];
+    self.compactToolbar.hidden = YES;
+    [self.view addSubview:self.compactToolbar];
+    self.compactBack = [self compactButton:nil symbol:@"chevron.left" action:@selector(compactBackPressed) label:@"Back to library"];
+    self.compactDisplay = [self compactButton:@"Display" symbol:nil action:@selector(showDisplayOptions) label:@"Display Options"];
+    self.compactSettings = [self compactButton:nil symbol:@"gearshape" action:@selector(showSettings) label:@"Session settings"];
+    self.compactStop = [self compactButton:@"Stop" symbol:nil action:@selector(stopGame) label:@"Stop game"];
+    [self.compactStop setTitleColor:UIColor.systemRedColor forState:UIControlStateNormal];
+    [self.view bringSubviewToFront:self.status];
     [self refreshControllerVisibility];
+}
+
+- (UIButton *)compactButton:(NSString *)title symbol:(NSString *)symbol action:(SEL)action label:(NSString *)label {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.tintColor = UIColor.whiteColor;
+    button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    if (title) [button setTitle:title forState:UIControlStateNormal];
+    if (symbol) [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+    button.accessibilityLabel = label;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [self.compactToolbar addSubview:button];
+    return button;
+}
+
+- (void)compactBackPressed {
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+- (void)updateCompactNavigation:(BOOL)landscape {
+    if (self.navigationController.topViewController != self) return;
+    if (self.navigationController.navigationBarHidden != landscape)
+        [self.navigationController setNavigationBarHidden:landscape animated:NO];
+    self.compactToolbar.hidden = !landscape;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self updateCompactNavigation:self.view.bounds.size.width > self.view.bounds.size.height];
+}
+
+- (void)screenshotTaken:(NSNotification *)note {
+    [self.host recordFrontendEvent:@"SCREENSHOT captured by iOS"];
+    // Capture itself does not require a core restart, forced drawable resize,
+    // pause, or JIT halt. Preserve the running session.
 }
 
 - (void)refreshControllerVisibility {
@@ -548,15 +598,36 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGRect area = CGRectInset(self.view.safeAreaLayoutGuide.layoutFrame, 8, 4);
-    CGFloat w = MAX(0, area.size.width), h = MAX(0, area.size.height);
     BOOL landscape = self.view.bounds.size.width > self.view.bounds.size.height;
+    [self updateCompactNavigation:landscape];
+    CGRect area = self.view.safeAreaLayoutGuide.layoutFrame;
+    if (!landscape) area = CGRectInset(area, 8, 4);
+    CGFloat w = MAX(0, area.size.width), h = MAX(0, area.size.height);
     BOOL showControls = !self.controls.hidden;
     self.controls.landscape = landscape;
     self.controls.alpha = landscape ? [AZValue(@"AzaharControlOpacity",self.game) doubleValue]/100.0 : 1;
     self.status.numberOfLines = landscape ? 1 : 3;
-    CGFloat statusHeight = landscape ? 18 : 42;
-    CGFloat contentHeight = MAX(0, h-statusHeight-4);
+    self.status.font = [UIFont monospacedSystemFontOfSize:landscape ? 10 : 12 weight:UIFontWeightMedium];
+    self.screen.layer.cornerRadius = landscape ? 0 : 10;
+    if (landscape) {
+        // Single 36-point row, no ROM filename, navigation prompt, or bottom strip.
+        const CGFloat bar = MIN(36, h);
+        self.compactToolbar.frame = CGRectMake(area.origin.x, area.origin.y, w, bar);
+        self.compactBack.frame = CGRectMake(0, 0, 44, bar);
+        self.compactDisplay.frame = CGRectMake(44, 0, 80, bar);
+        self.compactSettings.frame = CGRectMake(MAX(0,w-44), 0, 44, bar);
+        self.compactStop.frame = CGRectMake(MAX(0,w-100), 0, 56, bar);
+        self.status.frame = CGRectMake(area.origin.x+128, area.origin.y,
+                                      MAX(0,w-232), bar);
+        self.status.textAlignment = NSTextAlignmentCenter;
+        area.origin.y += bar;
+        area.size.height = MAX(0,h-bar);
+        h = area.size.height;
+    } else {
+        self.status.textAlignment = NSTextAlignmentLeft;
+    }
+    CGFloat statusHeight = landscape ? 0 : 42;
+    CGFloat contentHeight = MAX(0, h-statusHeight-(landscape ? 0 : 4));
     CGRect screen = CGRectMake(area.origin.x, area.origin.y, w, contentHeight);
     if (showControls && landscape) {
         // Overlay controls rather than sacrificing the game screen's width.
@@ -568,7 +639,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
                                          w, deckHeight);
     }
     self.screen.frame = screen;
-    self.status.frame = CGRectMake(area.origin.x, area.origin.y+contentHeight+4, w, statusHeight);
+    if (!landscape) self.status.frame = CGRectMake(area.origin.x, area.origin.y+contentHeight+4, w, statusHeight);
     [self updateDisplayGeometry];
     [self.controls setNeedsLayout];
 }
@@ -633,11 +704,13 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     if (!enabled) [self.circlePad centerStick];
 }
 - (void)appInactive:(NSNotification *)note {
+    [self.host recordFrontendEvent:@"LIFECYCLE app inactive"];
     [self.host setPaused:YES];
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
 }
 - (void)appActive:(NSNotification *)note {
+    [self.host recordFrontendEvent:@"LIFECYCLE app active"];
     [self refreshControllerVisibility];
     [self maybeStartRestart];
     [self refreshInput];
@@ -800,6 +873,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
     if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) {
+        [self.navigationController setNavigationBarHidden:NO animated:NO];
         self.restartPending = NO;
         self.pendingOptions = nil;
         self.host.delegate = nil;

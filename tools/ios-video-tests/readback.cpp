@@ -163,6 +163,7 @@ int main() {
               "headless presentation falls back");
         unsigned surface_width = 1, surface_height = 1;
         azahar_ios_vk_present_extent(&surface_width, &surface_height);
+        Check(azahar_ios_vk_present_stage() == 0, "headless presentation stage is idle");
         Check(surface_width == 0 && surface_height == 0, "headless surface extent");
         CheckFrames(*vk, format, false);
         CheckFrames(*vk, format, true);

@@ -10,6 +10,7 @@
 #if defined(IOS) && defined(ENABLE_VULKAN)
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +23,15 @@
 #include "libretro_vulkan.h"
 
 namespace {
+#if defined(__APPLE__)
+// Observed by the gameplay watchdog. Never acquire a Vulkan lock to sample it.
+std::atomic<unsigned> present_stage{0};
+struct PresentStageScope {
+    ~PresentStageScope() {
+        present_stage.store(0, std::memory_order_relaxed);
+    }
+};
+#endif
 struct StagingSlot {
     VkCommandBuffer command = VK_NULL_HANDLE;
     VkFence copied = VK_NULL_HANDLE;
@@ -635,14 +645,18 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
                                            unsigned drawable_height, const float* rectangles,
                                            unsigned count) {
 #if defined(__APPLE__)
+    const PresentStageScope stage_scope;
+    present_stage.store(1, std::memory_order_relaxed);
     if (!state.surface || !state.device || !state.image || state.device_failed || !rectangles ||
         !width || !height || !count || count > 2 || !drawable_width || !drawable_height)
         return -1;
     if (!state.swapchain || state.rebuild_surface || state.requested_width != drawable_width ||
         state.requested_height != drawable_height) {
+        present_stage.store(2, std::memory_order_relaxed);
         if (!CreateSwapchain(drawable_width, drawable_height))
             return -1;
     }
+    present_stage.store(3, std::memory_order_relaxed);
     Context::PresentSlot* slot = nullptr;
     for (auto& candidate : state.present_slots) {
         if (candidate.pending) {
@@ -658,6 +672,7 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     if (!slot)
         return 0;
     uint32_t index = 0;
+    present_stage.store(4, std::memory_order_relaxed);
     const auto acquire = vkAcquireNextImageKHR(state.device, state.swapchain, 0, slot->acquired,
                                                VK_NULL_HANDLE, &index);
     if (acquire == VK_NOT_READY || acquire == VK_TIMEOUT)
@@ -670,6 +685,7 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
         return -1;
     if (index >= state.present_images.size())
         return -1;
+    present_stage.store(5, std::memory_order_relaxed);
     auto command = slot->command;
     if (vkResetCommandBuffer(command, 0) != VK_SUCCESS ||
         vkResetFences(state.device, 1, &slot->fence) != VK_SUCCESS)
@@ -752,10 +768,13 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     present.swapchainCount = 1;
     present.pSwapchains = &state.swapchain;
     present.pImageIndices = &index;
+    present_stage.store(6, std::memory_order_relaxed);
     std::lock_guard lock{state.queue_mutex};
+    present_stage.store(7, std::memory_order_relaxed);
     if (vkQueueSubmit(state.queue, 1, &submit, slot->fence) != VK_SUCCESS)
         return -1;
     slot->pending = true;
+    present_stage.store(8, std::memory_order_relaxed);
     const auto result = vkQueuePresentKHR(state.queue, &present);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         state.rebuild_surface = true;
@@ -770,6 +789,14 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     (void)rectangles;
     (void)count;
     return -1;
+#endif
+}
+
+extern "C" unsigned azahar_ios_vk_present_stage() {
+#if defined(__APPLE__)
+    return present_stage.load(std::memory_order_relaxed);
+#else
+    return 0;
 #endif
 }
 

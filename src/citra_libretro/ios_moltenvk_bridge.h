@@ -16,6 +16,9 @@ __attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* 
 __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
     unsigned width, unsigned height, unsigned drawable_width, unsigned drawable_height,
     const float* rectangles, unsigned count);
+// Lock-free diagnostic: 0 idle, 1 validation, 2 rebuild, 3 fences, 4 acquire,
+// 5 recording, 6 queue lock, 7 submit, 8 present.
+__attribute__((visibility("default"))) unsigned azahar_ios_vk_present_stage();
 // Actual surface extent in physical pixels, including a rejected extent.
 __attribute__((visibility("default"))) void azahar_ios_vk_present_extent(unsigned* width,
                                                                          unsigned* height);

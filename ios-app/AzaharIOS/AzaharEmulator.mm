@@ -121,6 +121,11 @@ static std::atomic<bool> sJITProbeFailed{false};
     std::atomic<bool> _jitPending;
     std::atomic<uint64_t> _completedSlices;
     std::atomic<bool> _waitingForFirstFrame;
+    std::atomic<bool> _gameplayMonitoring;
+    std::atomic<unsigned> _gameplayPhase;
+    std::atomic<uint64_t> _returnedFrames;
+    std::atomic<uint64_t> _videoCallbacks;
+    decltype(&azahar_ios_vk_present_stage) _vkPresentStage;
     NSObject *_playSession;
     BOOL _receivedFirstVideo;
     std::atomic<uint64_t> _deliveredImages;
@@ -273,6 +278,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     }
 }
 
+- (void)recordFrontendEvent:(NSString *)event {
+    [self writeDiagnostic:[NSString stringWithFormat:@"%@; frames=%llu video=%llu phase=%u paused=%d",
+        event, (unsigned long long)_returnedFrames.load(), (unsigned long long)_videoCallbacks.load(),
+        _gameplayPhase.load(), (int)_paused.load()]];
+}
+
 - (void)reportJITStage:(NSString *)message {
     BOOL changed = NO;
     if (([message containsString:@"JIT27TRACE step 1/512"] ||
@@ -297,6 +308,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (!self) return nil;
 
     _requestJITHalt = nullptr;
+    _vkPresentStage = nullptr;
+    _gameplayMonitoring.store(false);
+    _gameplayPhase.store(0);
+    _returnedFrames.store(0);
+    _videoCallbacks.store(0);
     _audioRouteEpoch.store(0);
     _pauseAcknowledged.store(false);
     _vkRenderCallback = {};
@@ -443,6 +459,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             // No stop callback may outlive the dynamic library containing it.
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _requestJITHalt = nullptr;
+            _vkPresentStage = nullptr;
             if (_libraryHandle) {
                 [self writeDiagnostic:@"LIFECYCLE closing core library"];
                 dlclose(_libraryHandle);
@@ -564,6 +581,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_game_loaded"));
         {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+            _vkPresentStage = reinterpret_cast<decltype(_vkPresentStage)>(
+                dlsym(_libraryHandle, "azahar_ios_vk_present_stage"));
             _requestJITHalt = reinterpret_cast<void (*)(void)>(
                 dlsym(_libraryHandle, "azahar_jit_request_halt"));
             if (!_requestJITHalt) {
@@ -701,6 +720,53 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     return NO;
 }
 
+// Low-frequency observation only: never halt JIT, reset a GPU queue, or
+// destroy resources from a watchdog thread during an active gameplay stall.
+- (void)scheduleGameplayCheck:(NSObject *)session frames:(uint64_t)previous
+                       videos:(uint64_t)previousVideos misses:(unsigned)misses {
+    __weak AzaharEmulator *weakHost = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        AzaharEmulator *host = weakHost;
+        if (!host || !host->_gameplayMonitoring.load() || host->_stopping.load()) return;
+        @synchronized (AzaharEmulator.class) {
+            if (host->_playSession != session) return;
+        }
+        const uint64_t frames = host->_returnedFrames.load();
+        const uint64_t videos = host->_videoCallbacks.load();
+        const unsigned phase = host->_gameplayPhase.load();
+        const bool paused = host->_paused.load();
+        // A pause is expected when idle, but an in-flight frame can still be
+        // stuck after an interruption. Startup has its own watchdog.
+        const bool stuck = !host->_waitingForFirstFrame.load() &&
+            (!paused || phase != 0) && frames == previous;
+        const unsigned count = stuck ? misses + 1 : 0;
+        if (count >= 2 && count % 2 == 0) {
+            unsigned metalStage = 0;
+            {
+                std::unique_lock<std::mutex> lock(host->_jitBridgeMutex, std::try_to_lock);
+                if (lock.owns_lock() && host->_vkPresentStage)
+                    metalStage = host->_vkPresentStage();
+            }
+            [host writeDiagnostic:[NSString stringWithFormat:
+                @"STALL27 no completed retro_run for ~%u s; phase=%u metalStage=%u slices=%llu frames=%llu video=%llu videoDelta=%llu paused=%d",
+                count*2, phase, metalStage, (unsigned long long)host->_completedSlices.load(),
+                (unsigned long long)frames, (unsigned long long)videos,
+                (unsigned long long)(videos-previousVideos), (int)paused]];
+            if (count == 2) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    AzaharEmulator *current = weakHost;
+                    if (current && current->_gameplayMonitoring.load() && !current->_stopping.load())
+                        [current writeDiagnostic:@"STALL27 main queue responded to watchdog"];
+                });
+            }
+        } else if (!stuck && misses >= 2) {
+            [host writeDiagnostic:@"STALL27 worker progress resumed or session paused"];
+        }
+        [host scheduleGameplayCheck:session frames:frames videos:videos misses:count];
+    });
+}
+
 - (void)runLoadedGame {
     struct retro_system_av_info av = {};
     _getAVInfo(&av);
@@ -720,6 +786,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     double coreRunMilliseconds = 0.0;
     uint64_t previousImages = 0;
     bool firstFrame = true;
+    _returnedFrames.store(0);
+    _videoCallbacks.store(0);
+    _gameplayPhase.store(0);
+    _gameplayMonitoring.store(true);
+    [self scheduleGameplayCheck:_playSession frames:0 videos:0 misses:0];
     if (_jitEnabled) {
         _waitingForFirstFrame.store(true);
         [self scheduleFirstFrameCheckForSession:_playSession started:nextFrame previousSlices:0 initial:YES];
@@ -757,9 +828,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (_pauseAcknowledged.exchange(false))
             [self writeDiagnostic:@"LIFECYCLE resumed emulation worker"];
         const auto runStarted = std::chrono::steady_clock::now();
+        _gameplayPhase.store(1, std::memory_order_relaxed);
         @autoreleasepool {
             _runFrame();
         }
+        _returnedFrames.fetch_add(1, std::memory_order_relaxed);
+        _gameplayPhase.store(0, std::memory_order_relaxed);
         const auto now = std::chrono::steady_clock::now();
         if (_stopping.load() || LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo) !=
                                 LibRetro::ReadbackRecovery::Continue) break;
@@ -819,6 +893,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (nextFrame < now) nextFrame = now;
         std::this_thread::sleep_until(nextFrame);
     }
+    _gameplayMonitoring.store(false);
+    _gameplayPhase.store(0);
     _waitingForFirstFrame.store(false);
 }
 
@@ -949,8 +1025,17 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                height:(unsigned)height pitch:(size_t)pitch {
     if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
         _stopping.load() || _paused.load()) return;
+    _videoCallbacks.fetch_add(1, std::memory_order_relaxed);
+    // Restore retro_run phase even on early returns from a video callback.
+    struct VideoPhase {
+        std::atomic<unsigned>& phase;
+        const unsigned previous;
+        ~VideoPhase() { phase.store(previous, std::memory_order_relaxed); }
+    } videoPhase{_gameplayPhase, _gameplayPhase.load(std::memory_order_relaxed)};
+    _gameplayPhase.store(4, std::memory_order_relaxed);
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
     if (hardware && _metalActive) {
+        _gameplayPhase.store(2, std::memory_order_relaxed);
         CGSize size;
         BOOL landscape;
         NSDictionary *options;
@@ -1015,9 +1100,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _metalActive = false;
         [self reportJITStage:@"Direct Metal surface unavailable or busy; using Vulkan CPU readback"];
     }
+    _gameplayPhase.store(4, std::memory_order_relaxed);
     if (_frameQueued.exchange(true)) return;
     bool rgba = false;
     if (hardware) {
+        _gameplayPhase.store(3, std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
         const void *gpuPixels = nullptr;
         int status = -1;
@@ -1036,6 +1123,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             return;
         }
         data = status == 1 ? gpuPixels : nullptr;
+        _gameplayPhase.store(4, std::memory_order_relaxed);
     }
     if (!data || pitch < width * 4 || pitch > 4096 * 4) {
         if (hardware) {
@@ -1085,7 +1173,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices {
-    if (slices && _waitingForFirstFrame.load(std::memory_order_relaxed)) {
+    if (slices) {
         _completedSlices.fetch_add(1, std::memory_order_relaxed);
     }
     return _stopping.load() || _paused.load();
