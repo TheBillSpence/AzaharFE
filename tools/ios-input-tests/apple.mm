@@ -33,6 +33,10 @@ int main() {
         AZResetGameOptions(game);
         NSDictionary *before = AZLaunchOptions(game);
         assert([before[@"AzaharPresentation"] isEqual:@"metal"]);
+        assert([AZChoices(@"AzaharPresentation") containsObject:@"metal_sync"]);
+        NSMutableDictionary *sync = [before mutableCopy];
+        sync[@"AzaharPresentation"] = @"metal_sync";
+        assert(AZLaunchOptionsRequireRestart(before, sync));
         assert([before[@"AzaharLandscapeLayout"] isEqual:@"corner"]);
         assert(![AZOptionKeys() containsObject:@"AzaharDisplayFPS"]);
         NSMutableDictionary *display = [before mutableCopy];

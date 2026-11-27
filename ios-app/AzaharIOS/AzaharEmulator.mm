@@ -148,6 +148,8 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_readback_frame) _vkReadbackFrame;
     unsigned _readbackPending;
     decltype(&azahar_ios_vk_set_metal_layer) _vkSetMetalLayer;
+    decltype(&azahar_ios_vk_set_async_present) _vkSetAsyncPresent;
+    decltype(&azahar_ios_vk_separate_present_queue) _vkSeparatePresentQueue;
     decltype(&azahar_ios_vk_present_frame) _vkPresentFrame;
     decltype(&azahar_ios_vk_present_extent) _vkPresentExtent;
     unsigned _lastSurfaceWidth, _lastSurfaceHeight;
@@ -577,6 +579,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_readback_frame"));
         _vkSetMetalLayer = reinterpret_cast<decltype(_vkSetMetalLayer)>(
             dlsym(_libraryHandle, "azahar_ios_vk_set_metal_layer"));
+        _vkSetAsyncPresent = reinterpret_cast<decltype(_vkSetAsyncPresent)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_set_async_present"));
+        _vkSeparatePresentQueue = reinterpret_cast<decltype(_vkSeparatePresentQueue)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_separate_present_queue"));
         _vkPresentFrame = reinterpret_cast<decltype(_vkPresentFrame)>(
             dlsym(_libraryHandle, "azahar_ios_vk_present_frame"));
         _vkPresentExtent = reinterpret_cast<decltype(_vkPresentExtent)>(
@@ -713,13 +719,21 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         !_vkDrainReadback || !_vkShutdown || !_vkGameLoaded ||
         !_vkNegotiation || !_vkRenderCallback.context_reset) return NO;
     try {
+        NSString *presentation = self.launchOptions[@"AzaharPresentation"];
+        const bool asynchronous = [presentation isEqual:@"metal"];
         _metalActive = _vkSetMetalLayer && _vkPresentFrame && self.metalLayer &&
-            [self.launchOptions[@"AzaharPresentation"] isEqual:@"metal"];
+            (asynchronous || [presentation isEqual:@"metal_sync"]);
+        if (_vkSetAsyncPresent) _vkSetAsyncPresent(asynchronous);
         if (_metalActive) _vkSetMetalLayer((__bridge void *)self.metalLayer);
         if (!_vkStart(_vkNegotiation)) return NO;
         _vkInterface = const_cast<void *>(_vkGetInterface());
         if (!_vkInterface) return NO;
         [self reportJITStage:@"MoltenVK device ready; initializing Vulkan PICA200"];
+        if (_metalActive) {
+            [self writeDiagnostic:[NSString stringWithFormat:@"METAL27 mode=%@ queue=%@",
+                asynchronous && _vkSetAsyncPresent ? @"async" : @"sync",
+                _vkSeparatePresentQueue && _vkSeparatePresentQueue() ? @"separate" : @"shared"]];
+        }
         _vkRenderCallback.context_reset();
         return _vkGameLoaded();
     } catch (const std::exception& ex) {
@@ -1119,7 +1133,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             return;
         }
         _metalActive = false;
-        [self reportJITStage:@"Direct Metal surface unavailable or busy; using Vulkan CPU readback"];
+        unsigned stage = 0;
+        {
+            std::lock_guard<std::mutex> lock(_jitBridgeMutex);
+            if (_vkPresentStage) stage = _vkPresentStage();
+        }
+        [self reportJITStage:[NSString stringWithFormat:
+            @"Metal surface unavailable or busy; using Vulkan CPU readback (stage=%u, consecutiveBusy=%u)",
+            stage, _metalPending]];
     }
     _gameplayPhase.store(4, std::memory_order_relaxed);
     if (_frameQueued.exchange(true)) return;

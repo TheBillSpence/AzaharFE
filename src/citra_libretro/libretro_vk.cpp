@@ -14,6 +14,9 @@
 #include "citra_libretro/environment.h"
 #include "citra_libretro/libretro_vk.h"
 #include "common/assert.h"
+#if defined(IOS) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+#include "citra_libretro/ios_moltenvk_bridge.h"
+#endif
 #include "common/logging/log.h"
 #include "common/settings.h"
 #include "core/frontend/emu_window.h"
@@ -167,11 +170,15 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     }
 
     // Create device
-    const float queue_priority = 1.0f;
+    const float queue_priorities[] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queue_info.queueFamilyIndex = graphics_queue_family;
     queue_info.queueCount = 1;
-    queue_info.pQueuePriorities = &queue_priority;
+#if defined(IOS) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+    if (surface && queue_families[graphics_queue_family].queueCount >= 2)
+        queue_info.queueCount = 2;
+#endif
+    queue_info.pQueuePriorities = queue_priorities;
 
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     device_info.queueCreateInfoCount = 1;
@@ -187,6 +194,11 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
 
     VkDevice device = VK_NULL_HANDLE;
     VkResult result = vkCreateDevice(gpu, &device_info, nullptr, &device);
+    if (result != VK_SUCCESS && queue_info.queueCount == 2) {
+        queue_info.queueCount = 1;
+        device = VK_NULL_HANDLE;
+        result = vkCreateDevice(gpu, &device_info, nullptr, &device);
+    }
     if (result != VK_SUCCESS) {
         LOG_CRITICAL(Render_Vulkan, "vkCreateDevice failed: {}", static_cast<int>(result));
         return false;
@@ -220,7 +232,9 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     context->device = device;
     context->queue = queue;
     context->queue_family_index = graphics_queue_family;
-    context->presentation_queue = queue; // Same queue for LibRetro
+    context->presentation_queue = queue;
+    if (queue_info.queueCount == 2)
+        vkGetDeviceQueue(device, graphics_queue_family, 1, &context->presentation_queue);
     context->presentation_queue_family_index = graphics_queue_family;
 
     LOG_INFO(Render_Vulkan,
@@ -697,8 +711,10 @@ void PresentWindow::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
 #if defined(IOS) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
     // Frontend GPU copies may still reference the old shared output image.
-    // The scheduler is finished here; wait on the worker before destroying it.
-    device.waitIdle();
+    // Only the graphics queue references the shared output image; the
+    // asynchronous presentation worker uses swapchain images exclusively.
+    // Serialize with any shared-queue presentation.
+    azahar_ios_vk_wait_graphics_idle();
 #endif
     DestroyFrameResources();
     // Recreate output texture with new dimensions

@@ -31,7 +31,7 @@ NSArray<NSString *> *AZChoices(NSString *key) {
     if ([key isEqual:@"AzaharJITSpeed"]) return @[@"fast", @"fastmem", @"fastmemfp", @"hyper", @"hyperfp", @"turbo", @"direct", @"linked", @"safe"];
     if ([key isEqual:@"AzaharShaderJIT"] || [key isEqual:@"AzaharDeepProfile"] || [key isEqual:@"AzaharAsyncShaders"]) return @[@"off", @"on"];
     if ([key isEqual:@"citra_use_disk_shader_cache"]) return @[@"enabled", @"disabled"];
-    if ([key isEqual:@"AzaharPresentation"]) return @[@"metal", @"readback"];
+    if ([key isEqual:@"AzaharPresentation"]) return @[@"metal", @"metal_sync", @"readback"];
     if ([key isEqual:@"AzaharLandscapeLayout"]) return @[@"corner", @"stacked", @"top_only"];
     if ([key isEqual:@"AzaharTouchSize"]) return @[@"30", @"15", @"20", @"25", @"35", @"40", @"45", @"50", @"55", @"60"];
     if ([key isEqual:@"AzaharDisplayAspect"]) return @[@"native", @"stretch"];
@@ -51,7 +51,7 @@ NSString *AZChoiceTitle(NSString *key, NSString *v) {
         return [NSString stringWithFormat:@"%@ threads", v];
     if ([key isEqual:@"AzaharTouchSize"] || [key isEqual:@"AzaharControlOpacity"])
         return [NSString stringWithFormat:@"%@%%",v];
-    return @{@"metal":@"Direct Metal surface (experimental)", @"readback":@"CPU readback (compatibility)",
+    return @{@"metal":@"Async Metal (experimental)", @"metal_sync":@"Direct Metal (synchronous)", @"readback":@"CPU readback (compatibility)",
              @"corner":@"Option B — Corner (default)", @"stacked":@"Option A — Stacked",
              @"top_only":@"Top screen only", @"native":@"Original (no stretch)", @"stretch":@"Stretch to fit",
              @"combined":@"Automatic (SUPER JIT)", @"custom":@"Advanced settings",

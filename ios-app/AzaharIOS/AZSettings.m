@@ -194,7 +194,7 @@
     }
     NSString *key=[self keysForSection:ip.section][ip.row - (ip.section == 2 ? 1 : 0)]; NSURL *url=self.perGame ? self.game : nil;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:AZOptionTitle(key)
-        message:[key isEqual:@"AzaharPresentation"] ? @"Direct Metal surface presents Vulkan frames through CAMetalLayer without CPU readback. Compatibility uses the existing readback path. Reopen the game to switch. Automatic fallback if Metal fails." :
+        message:[key isEqual:@"AzaharPresentation"] ? @"Async Metal acquires and presents drawables on a dedicated worker, with GPU-only blits. Direct Metal preserves synchronous presentation. CPU readback is the compatibility mode. Reopen the game to switch." :
                 [key isEqual:@"AzaharTouchSize"] ? @"Bottom touchscreen height relative to the main screen in landscape." :
                 [key isEqual:@"AzaharShaderJIT"] ? @"Experimental ARM64 vertex shader and full TEV fragment combiner compiler. Requires CPU JIT permission; invalid states or failed native validation use the reference combiner. Reopen the game to apply." :
                 [key isEqual:@"AzaharSoftwareRasterizer"] ? @"Optimized uses a dedicated raster workgroup, runs small triangles inline and rejects safe hidden pixels before shading. Reference retains the previous dispatch and pixel path. Reopen the game to apply." :

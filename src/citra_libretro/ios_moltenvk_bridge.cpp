@@ -12,9 +12,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <vulkan/vulkan.h>
 #if defined(__APPLE__)
@@ -26,6 +28,7 @@ namespace {
 #if defined(__APPLE__)
 // Observed by the gameplay watchdog. Never acquire a Vulkan lock to sample it.
 std::atomic<unsigned> present_stage{0};
+std::atomic<unsigned> async_worker_stage{0};
 struct PresentStageScope {
     ~PresentStageScope() {
         present_stage.store(0, std::memory_order_relaxed);
@@ -70,6 +73,9 @@ struct Context {
     std::vector<std::uint8_t> pixels;
 #if defined(__APPLE__)
     void* metal_layer = nullptr;
+    bool async_present = true;
+    VkQueue presentation_queue = VK_NULL_HANDLE;
+    std::mutex presentation_mutex;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkExtent2D extent{};
@@ -81,11 +87,24 @@ struct Context {
         VkCommandBuffer command = VK_NULL_HANDLE;
         VkSemaphore acquired = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
+        VkFence acquire_fence = VK_NULL_HANDLE;
+        bool acquisition_pending = false;
         bool pending = false;
     };
     std::array<PresentSlot, 3> present_slots{};
     std::vector<VkImage> present_images;
     std::vector<VkSemaphore> present_ready;
+    enum class AsyncPhase { Idle, AcquireRequested, Acquiring, Ready, PresentRequested, Presenting, Failed };
+    std::mutex async_mutex;
+    std::condition_variable async_cv;
+    std::thread async_thread;
+    AsyncPhase async_phase = AsyncPhase::Idle;
+    bool async_stop = false;
+    bool async_exited = false;
+    bool async_rebuild = false;
+    PresentSlot* async_slot = nullptr;
+    PresentSlot* async_next = nullptr;
+    uint32_t async_index = 0;
 #endif
 } state;
 
@@ -265,6 +284,19 @@ bool CopyOutput(StagingSlot& slot, unsigned width, unsigned height) {
     return false;
 }
 
+bool DrainStagingCopies() {
+    for (auto& slot : state.slots) {
+        if (!slot.pending)
+            continue;
+        const auto result =
+            vkWaitForFences(state.device, 1, &slot.copied, VK_TRUE, 1'000'000'000ULL);
+        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST)
+            return false;
+        slot.pending = false;
+    }
+    return true;
+}
+
 bool WaitCopy(StagingSlot& slot, std::uint64_t timeout) {
     const auto result = vkWaitForFences(state.device, 1, &slot.copied, VK_TRUE, timeout);
     if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST)
@@ -290,6 +322,144 @@ bool ReadPixels(StagingSlot& slot, const void** pixels, std::size_t* pitch, bool
     return true;
 }
 #if defined(__APPLE__)
+using AsyncPhase = Context::AsyncPhase;
+
+// The worker never reads the renderer's reusable source image or records its
+// command buffers. The producer enqueues the blit on the graphics queue first;
+// the worker only acquires drawables and presents images already submitted.
+void AsyncPresentLoop() {
+    std::unique_lock lock{state.async_mutex};
+    for (;;) {
+        state.async_cv.wait(lock, [] {
+            return state.async_stop || state.async_phase == AsyncPhase::AcquireRequested ||
+                   state.async_phase == AsyncPhase::PresentRequested;
+        });
+        // Finish an already submitted presentation, but do not acquire more
+        // drawables once shutdown has been requested.
+        if (state.async_stop && state.async_phase != AsyncPhase::PresentRequested)
+            break;
+        if (state.async_phase == AsyncPhase::AcquireRequested) {
+            auto* slot = state.async_slot;
+            state.async_phase = AsyncPhase::Acquiring;
+            lock.unlock();
+            async_worker_stage.store(4, std::memory_order_relaxed);
+            uint32_t index = 0;
+            VkResult result = vkResetFences(state.device, 1, &slot->acquire_fence);
+            if (result == VK_SUCCESS)
+                result = vkAcquireNextImageKHR(state.device, state.swapchain, 0, slot->acquired,
+                                               slot->acquire_fence, &index);
+            async_worker_stage.store(0, std::memory_order_relaxed);
+            lock.lock();
+            if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+                slot->acquisition_pending = true;
+                state.async_index = index;
+                state.async_phase = index < state.present_images.size() ? AsyncPhase::Ready
+                                                                       : AsyncPhase::Failed;
+            } else if (result == VK_NOT_READY || result == VK_TIMEOUT ||
+                       result == VK_ERROR_OUT_OF_DATE_KHR) {
+                state.async_rebuild = result == VK_ERROR_OUT_OF_DATE_KHR;
+                state.async_phase = AsyncPhase::Idle;
+            } else {
+                state.async_phase = AsyncPhase::Failed;
+            }
+        } else {
+            const uint32_t index = state.async_index;
+            const VkSemaphore ready = state.present_ready[index];
+            const VkSwapchainKHR swapchain = state.swapchain;
+            auto* next = state.async_next;
+            state.async_next = nullptr;
+            state.async_phase = AsyncPhase::Presenting;
+            lock.unlock();
+            VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            present.waitSemaphoreCount = 1;
+            present.pWaitSemaphores = &ready;
+            present.swapchainCount = 1;
+            present.pSwapchains = &swapchain;
+            present.pImageIndices = &index;
+            async_worker_stage.store(6, std::memory_order_relaxed);
+            VkResult result;
+            {
+                // Queue host access must be externally synchronized. A second
+                // queue in the same family, when supported, avoids contention
+                // with the emulation scheduler. The binary semaphore orders blit
+                // completion before presentation across either queue.
+                std::lock_guard queue_lock{state.presentation_queue == state.queue
+                                              ? state.queue_mutex
+                                              : state.presentation_mutex};
+                async_worker_stage.store(8, std::memory_order_relaxed);
+                result = vkQueuePresentKHR(state.presentation_queue, &present);
+            }
+            async_worker_stage.store(0, std::memory_order_relaxed);
+            lock.lock();
+            if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+                if (next && !state.async_stop) {
+                    state.async_slot = next;
+                    state.async_phase = AsyncPhase::AcquireRequested;
+                } else {
+                    state.async_phase = AsyncPhase::Idle;
+                }
+            } else if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+                state.async_rebuild = true;
+                state.async_phase = AsyncPhase::Idle;
+            } else {
+                state.async_phase = AsyncPhase::Failed;
+            }
+        }
+    }
+    state.async_exited = true;
+    async_worker_stage.store(0, std::memory_order_relaxed);
+}
+
+bool EnsureAsyncWorker() {
+    if (state.async_thread.joinable())
+        return true;
+    try {
+        state.async_thread = std::thread(AsyncPresentLoop);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void RequestAsyncStop() {
+    if (!state.async_thread.joinable())
+        return;
+    std::lock_guard lock{state.async_mutex};
+    state.async_stop = true;
+    state.async_cv.notify_one();
+}
+
+bool StopAsyncWorker() {
+    if (!state.async_thread.joinable())
+        return true;
+    RequestAsyncStop();
+    {
+        std::lock_guard lock{state.async_mutex};
+        if (!state.async_exited)
+            return false;
+    }
+    state.async_thread.join();
+    return true;
+}
+
+Context::PresentSlot* FindPresentSlot(bool& failed) {
+    Context::PresentSlot* slot = nullptr;
+    for (auto& candidate : state.present_slots) {
+        if (candidate.pending) {
+            const auto result = vkGetFenceStatus(state.device, candidate.fence);
+            if (result == VK_SUCCESS)
+                candidate.pending = false;
+            else if (result != VK_NOT_READY) {
+                failed = true;
+                return nullptr;
+            }
+        }
+        if (!candidate.pending && !candidate.acquisition_pending && !slot)
+            slot = &candidate;
+    }
+    return slot;
+}
+
 void DestroySwapchain() {
     // All use of the drawable images and semaphores has finished.
     for (auto semaphore : state.present_ready)
@@ -309,6 +479,9 @@ bool CreateSwapchain(unsigned width, unsigned height) {
         // Resizing is rare. Never release drawable resources still owned by the GPU.
         std::lock_guard lock{state.queue_mutex};
         if (vkQueueWaitIdle(state.queue) != VK_SUCCESS)
+            return false;
+        if (state.presentation_queue != state.queue &&
+            vkQueueWaitIdle(state.presentation_queue) != VK_SUCCESS)
             return false;
         DestroySwapchain();
         for (auto& slot : state.present_slots)
@@ -417,6 +590,15 @@ extern "C" void azahar_ios_vk_set_metal_layer(void* layer) {
 #endif
 }
 
+extern "C" void azahar_ios_vk_set_async_present(bool enabled) {
+#if defined(__APPLE__)
+    if (!state.instance)
+        state.async_present = enabled;
+#else
+    (void)enabled;
+#endif
+}
+
 extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
     if (!opaque_negotiation || state.instance)
         return false;
@@ -497,6 +679,12 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
     state.device = context.device;
     state.queue = context.queue;
     state.queue_family = context.queue_family_index;
+#if defined(__APPLE__)
+    state.presentation_queue = context.presentation_queue &&
+                                       context.presentation_queue_family_index == state.queue_family
+                                   ? context.presentation_queue
+                                   : state.queue;
+#endif
 
     VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -526,6 +714,7 @@ extern "C" bool azahar_ios_vk_start(const void* opaque_negotiation) {
         for (auto& slot : state.present_slots) {
             if (vkAllocateCommandBuffers(state.device, &alloc, &slot.command) != VK_SUCCESS ||
                 vkCreateFence(state.device, &fence, nullptr, &slot.fence) != VK_SUCCESS ||
+                vkCreateFence(state.device, &fence, nullptr, &slot.acquire_fence) != VK_SUCCESS ||
                 vkCreateSemaphore(state.device, &semaphore, nullptr, &slot.acquired) !=
                     VK_SUCCESS) {
                 complete = false;
@@ -570,10 +759,16 @@ extern "C" int azahar_ios_vk_readback_frame(unsigned width, unsigned height, con
          state.image_format != VK_FORMAT_B8G8R8A8_UNORM))
         return -1;
     *pixels = nullptr;
-    // Drain before changing dimensions or switching modes. No old-size frame
-    // may escape with the current callback's geometry.
+#if defined(__APPLE__)
+    // Fallback may be needed because acquisition is stalled. Stop requesting
+    // drawables, but do not wait for that worker to return before CPU readback.
+    // The swapchain and its resources remain owned until safe session teardown.
+    RequestAsyncStop();
+#endif
+    // Drain only staging copies before changing readback geometry or mode.
+    // Presentation blits already restore the source on the graphics queue.
     if (state.width != width || state.height != height || state.asynchronous != asynchronous) {
-        if (!azahar_ios_vk_drain_readback())
+        if (!DrainStagingCopies())
             return -1;
         state.width = width;
         state.height = height;
@@ -650,39 +845,81 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     if (!state.surface || !state.device || !state.image || state.device_failed || !rectangles ||
         !width || !height || !count || count > 2 || !drawable_width || !drawable_height)
         return -1;
-    if (!state.swapchain || state.rebuild_surface || state.requested_width != drawable_width ||
-        state.requested_height != drawable_height) {
-        present_stage.store(2, std::memory_order_relaxed);
-        if (!CreateSwapchain(drawable_width, drawable_height))
-            return -1;
-    }
-    present_stage.store(3, std::memory_order_relaxed);
     Context::PresentSlot* slot = nullptr;
-    for (auto& candidate : state.present_slots) {
-        if (candidate.pending) {
-            const auto result = vkGetFenceStatus(state.device, candidate.fence);
-            if (result == VK_SUCCESS)
-                candidate.pending = false;
-            else if (result != VK_NOT_READY)
+    uint32_t index = 0;
+    bool resize = !state.swapchain || state.rebuild_surface ||
+                  state.requested_width != drawable_width ||
+                  state.requested_height != drawable_height;
+    if (state.async_present) {
+        if (!EnsureAsyncWorker())
+            return -1;
+        // No driver calls while holding the handoff mutex. When a drawable
+        // is already acquired, consume it before recreating its swapchain.
+        {
+            std::lock_guard lock{state.async_mutex};
+            if (state.async_phase == AsyncPhase::Failed || state.async_stop)
+                return -1;
+            resize |= state.async_rebuild;
+            if (resize)
+                state.async_next = nullptr;
+            if (state.async_phase == AsyncPhase::Ready) {
+                slot = state.async_slot;
+                index = state.async_index;
+                if (resize)
+                    state.rebuild_surface = true;
+            } else if (state.async_phase != AsyncPhase::Idle) {
+                return 0;
+            }
+        }
+        if (!slot) {
+            if (resize) {
+                present_stage.store(2, std::memory_order_relaxed);
+                if (!CreateSwapchain(drawable_width, drawable_height))
+                    return -1;
+                std::lock_guard lock{state.async_mutex};
+                state.async_rebuild = false;
+            }
+            present_stage.store(3, std::memory_order_relaxed);
+            bool failed = false;
+            auto* next = FindPresentSlot(failed);
+            if (failed)
+                return -1;
+            if (next) {
+                std::lock_guard lock{state.async_mutex};
+                state.async_slot = next;
+                state.async_phase = AsyncPhase::AcquireRequested;
+                state.async_cv.notify_one();
+            }
+            return 0;
+        }
+    } else {
+        if (resize) {
+            present_stage.store(2, std::memory_order_relaxed);
+            if (!CreateSwapchain(drawable_width, drawable_height))
                 return -1;
         }
-        if (!candidate.pending && !slot)
-            slot = &candidate;
+        present_stage.store(3, std::memory_order_relaxed);
+        bool failed = false;
+        slot = FindPresentSlot(failed);
+        if (failed)
+            return -1;
+        if (!slot)
+            return 0;
+        present_stage.store(4, std::memory_order_relaxed);
+        if (vkResetFences(state.device, 1, &slot->acquire_fence) != VK_SUCCESS)
+            return -1;
+        const auto acquire = vkAcquireNextImageKHR(state.device, state.swapchain, 0,
+                                                   slot->acquired, slot->acquire_fence, &index);
+        if (acquire == VK_NOT_READY || acquire == VK_TIMEOUT)
+            return 0;
+        if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
+            state.rebuild_surface = true;
+            return 0;
+        }
+        if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
+            return -1;
+        slot->acquisition_pending = true;
     }
-    if (!slot)
-        return 0;
-    uint32_t index = 0;
-    present_stage.store(4, std::memory_order_relaxed);
-    const auto acquire = vkAcquireNextImageKHR(state.device, state.swapchain, 0, slot->acquired,
-                                               VK_NULL_HANDLE, &index);
-    if (acquire == VK_NOT_READY || acquire == VK_TIMEOUT)
-        return 0;
-    if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
-        state.rebuild_surface = true;
-        return 0;
-    }
-    if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
-        return -1;
     if (index >= state.present_images.size())
         return -1;
     present_stage.store(5, std::memory_order_relaxed);
@@ -769,13 +1006,30 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     present.pSwapchains = &state.swapchain;
     present.pImageIndices = &index;
     present_stage.store(6, std::memory_order_relaxed);
-    std::lock_guard lock{state.queue_mutex};
-    present_stage.store(7, std::memory_order_relaxed);
-    if (vkQueueSubmit(state.queue, 1, &submit, slot->fence) != VK_SUCCESS)
-        return -1;
+    {
+        std::lock_guard lock{state.queue_mutex};
+        present_stage.store(7, std::memory_order_relaxed);
+        if (vkQueueSubmit(state.queue, 1, &submit, slot->fence) != VK_SUCCESS)
+            return -1;
+    }
     slot->pending = true;
+    // The submitted fence now covers consumption of the acquired semaphore.
+    slot->acquisition_pending = false;
+    if (state.async_present) {
+        bool failed = false;
+        auto* next = resize ? nullptr : FindPresentSlot(failed);
+        {
+            std::lock_guard lock{state.async_mutex};
+            state.async_next = failed ? nullptr : next;
+            state.async_phase = AsyncPhase::PresentRequested;
+            state.async_cv.notify_one();
+        }
+        return 1;
+    }
     present_stage.store(8, std::memory_order_relaxed);
-    const auto result = vkQueuePresentKHR(state.queue, &present);
+    std::lock_guard queue_lock{state.presentation_queue == state.queue ? state.queue_mutex
+                                                                     : state.presentation_mutex};
+    const auto result = vkQueuePresentKHR(state.presentation_queue, &present);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         state.rebuild_surface = true;
         return 0;
@@ -794,7 +1048,8 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
 
 extern "C" unsigned azahar_ios_vk_present_stage() {
 #if defined(__APPLE__)
-    return present_stage.load(std::memory_order_relaxed);
+    const unsigned worker = async_worker_stage.load(std::memory_order_relaxed);
+    return worker ? worker : present_stage.load(std::memory_order_relaxed);
 #else
     return 0;
 #endif
@@ -813,13 +1068,37 @@ extern "C" void azahar_ios_vk_present_extent(unsigned* width, unsigned* height) 
 #endif
 }
 
+extern "C" void azahar_ios_vk_wait_graphics_idle() {
+    if (state.device && state.queue) {
+        std::lock_guard lock{state.queue_mutex};
+        vkQueueWaitIdle(state.queue);
+    }
+}
+
+extern "C" bool azahar_ios_vk_separate_present_queue() {
+#if defined(__APPLE__)
+    return state.presentation_queue && state.presentation_queue != state.queue;
+#else
+    return false;
+#endif
+}
+
 extern "C" bool azahar_ios_vk_readback_failed() {
     return state.device_failed;
 }
 
 extern "C" bool azahar_ios_vk_drain_readback() {
 #if defined(__APPLE__)
+    if (!StopAsyncWorker())
+        return false;
     for (auto& slot : state.present_slots) {
+        if (slot.acquisition_pending) {
+            const auto acquire = vkWaitForFences(state.device, 1, &slot.acquire_fence, VK_TRUE,
+                                                 1'000'000'000ULL);
+            if (acquire != VK_SUCCESS && acquire != VK_ERROR_DEVICE_LOST)
+                return false;
+            slot.acquisition_pending = false;
+        }
         if (!slot.pending)
             continue;
         const auto result =
@@ -829,19 +1108,27 @@ extern "C" bool azahar_ios_vk_drain_readback() {
         slot.pending = false;
     }
 #endif
-    for (auto& slot : state.slots) {
-        if (!slot.pending)
-            continue;
-        const auto result =
-            vkWaitForFences(state.device, 1, &slot.copied, VK_TRUE, 1'000'000'000ULL);
-        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST)
-            return false;
-        slot.pending = false;
-    }
-    return true;
+    return DrainStagingCopies();
 }
 
 extern "C" void azahar_ios_vk_shutdown() {
+#if defined(__APPLE__)
+    // A blocked driver call must never outlive its core, swapchain or layer.
+    while (!StopAsyncWorker())
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (state.device) {
+        for (auto& slot : state.present_slots) {
+            if (!slot.acquisition_pending)
+                continue;
+            VkResult result;
+            do {
+                result = vkWaitForFences(state.device, 1, &slot.acquire_fence, VK_TRUE,
+                                         1'000'000'000ULL);
+            } while (result == VK_TIMEOUT);
+            slot.acquisition_pending = false;
+        }
+    }
+#endif
     if (state.device) {
         std::lock_guard lock{state.queue_mutex};
         vkDeviceWaitIdle(state.device);
@@ -850,6 +1137,7 @@ extern "C" void azahar_ios_vk_shutdown() {
         for (auto& slot : state.present_slots) {
             vkDestroySemaphore(state.device, slot.acquired, nullptr);
             vkDestroyFence(state.device, slot.fence, nullptr);
+            vkDestroyFence(state.device, slot.acquire_fence, nullptr);
         }
         state.present_slots = {};
 #endif
@@ -868,6 +1156,12 @@ extern "C" void azahar_ios_vk_shutdown() {
     state.metal_layer = nullptr;
     state.requested_width = state.requested_height = 0;
     state.rebuild_surface = false;
+    state.async_present = true;
+    state.presentation_queue = VK_NULL_HANDLE;
+    state.async_phase = AsyncPhase::Idle;
+    state.async_stop = state.async_exited = state.async_rebuild = false;
+    state.async_slot = state.async_next = nullptr;
+    state.async_index = 0;
 #endif
     if (state.instance)
         vkDestroyInstance(state.instance, nullptr);

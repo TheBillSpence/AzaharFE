@@ -680,7 +680,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.circlePad.host = self.host;
     self.screen.host = self.host;
     if ([options[@"citra_graphics_api"] isEqual:@"Vulkan"] &&
-        [options[@"AzaharPresentation"] isEqual:@"metal"])
+        ([options[@"AzaharPresentation"] isEqual:@"metal"] ||
+         [options[@"AzaharPresentation"] isEqual:@"metal_sync"]))
         self.host.metalLayer = [self.screen prepareMetal];
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
