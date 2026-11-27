@@ -737,6 +737,17 @@ void PresentWindow::Present(Frame* frame) {
         return;
     }
 
+#if defined(IOS) && defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+    azahar_ios_vk_begin_present(&scheduler);
+    struct EndPresent {
+        ~EndPresent() {
+            azahar_ios_vk_end_present();
+        }
+    } end_present;
+#elif defined(IOS)
+    scheduler.WaitWorker();
+#endif
+
     // CRITICAL: Use persistent struct to avoid stack lifetime issues!
     // RetroArch may cache this pointer for frame duping during pause
     persistent_libretro_image.image_view = static_cast<VkImageView>(frame->image_view);

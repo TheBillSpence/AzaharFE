@@ -17,6 +17,9 @@ __attribute__((visibility("default"))) void azahar_ios_vk_set_async_present(bool
 __attribute__((visibility("default"))) bool azahar_ios_vk_separate_present_queue();
 // Core-only synchronization before destroying the reusable output image.
 void azahar_ios_vk_wait_graphics_idle();
+// Core-internal scoped access to the scheduler during the video callback.
+void azahar_ios_vk_begin_present(void* scheduler);
+void azahar_ios_vk_end_present();
 __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
     unsigned width, unsigned height, unsigned drawable_width, unsigned drawable_height,
     const float* rectangles, unsigned count);

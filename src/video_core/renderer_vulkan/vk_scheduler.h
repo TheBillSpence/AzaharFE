@@ -144,11 +144,11 @@ private:
             using FuncType = TypedCommand<T>;
             static_assert(sizeof(FuncType) < sizeof(data), "Lambda is too large");
 
-            recorded_counts++;
             command_offset = Common::AlignUp(command_offset, alignof(FuncType));
             if (command_offset > sizeof(data) - sizeof(FuncType)) {
                 return false;
             }
+            ++recorded_counts;
             Command* const current_last = last;
             last = new (data.data() + command_offset) FuncType(std::move(command));
 

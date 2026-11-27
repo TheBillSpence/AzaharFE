@@ -3,6 +3,8 @@
 // Refer to the LICENSE.txt file included.
 
 #include <boost/container/static_vector.hpp>
+#include <exception>
+#include <mutex>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -155,6 +157,10 @@ PipelineCache::~PipelineCache() {
 void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
                               const VideoCore::DiskResourceLoadCallback& callback) {
     const bool flag_set = SetCacheLoadFlag(GetProgramID());
+#ifdef IOS
+    shader_workers.WaitForRequests();
+    pipeline_workers.WaitForRequests();
+#endif
     LoadDriverPipelineDiskCache(stop_loading, callback);
     LoadDiskCache(stop_loading, callback);
     if (flag_set) {
@@ -187,6 +193,11 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
     const bool flag_set = SetCacheLoadFlag(title_id);
 
     // Save current driver cache, if one was loaded, update program ID and load the new driver cache
+#ifdef IOS
+    // Checkpoint tasks and pipeline builds must finish before replacing the cache handle.
+    shader_workers.WaitForRequests();
+    pipeline_workers.WaitForRequests();
+#endif
     if (curr_disk_cache) {
         SaveDriverPipelineDiskCache();
     }
@@ -285,6 +296,14 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     }
 
     const u64 cache_file_size = cache_file.GetSize();
+#ifdef IOS
+    if (cache_file_size < sizeof(VkPipelineCacheHeaderVersionOne) ||
+        cache_file_size > 128ULL * 1024 * 1024) {
+        LOG_WARNING(Render_Vulkan, "Ignoring incomplete or oversized pipeline cache");
+        load_cache(false);
+        return;
+    }
+#endif
     cache_data.resize(cache_file_size);
 
     if (cache_file.ReadBytes(cache_data.data(), cache_file_size) != cache_file_size) {
@@ -309,34 +328,76 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     load_cache(true);
 }
 
+namespace {
+void SavePipelineCacheSnapshot(vk::Device device, vk::PipelineCache cache,
+                               const std::string& path, bool opportunistic) {
+    try {
+        std::vector<u8> data;
+#ifdef IOS
+        {
+            std::unique_lock lock{driver_pipeline_cache_mutex, std::defer_lock};
+            if (opportunistic) {
+                if (!lock.try_lock())
+                    return;
+            } else {
+                lock.lock();
+            }
+            data = device.getPipelineCacheData(cache);
+        }
+#else
+        (void)opportunistic;
+        data = device.getPipelineCacheData(cache);
+#endif
+        if (data.empty())
+            return;
+        // Keep the last valid cache if a write fails or the app is interrupted.
+        const auto temporary = path + ".tmp";
+        FileUtil::IOFile file{temporary, "wb"};
+        if (!file.IsOpen() || file.WriteBytes(data.data(), data.size()) != data.size() ||
+            !file.Flush() || !file.Close()) {
+            LOG_ERROR(Render_Vulkan, "Unable to write pipeline cache checkpoint");
+            return;
+        }
+        if (!FileUtil::Rename(temporary, path)) {
+            LOG_ERROR(Render_Vulkan, "Unable to replace pipeline cache");
+            return;
+        }
+        LOG_INFO(Render_Vulkan, "Saved pipeline cache ({} KiB)", data.size() / 1024);
+    } catch (const std::exception& error) {
+        LOG_WARNING(Render_Vulkan, "Pipeline cache snapshot failed: {}", error.what());
+    }
+}
+} // namespace
+
 void PipelineCache::SaveDriverPipelineDiskCache() {
-    // Save Vulkan pipeline cache
     if (!Settings::values.use_disk_shader_cache || !driver_pipeline_cache) {
         return;
     }
-
-    const auto cache_dir = GetPipelineCacheDir();
-    const u32 vendor_id = instance.GetVendorID();
-    const u32 device_id = instance.GetDeviceID();
-    const u64 program_id = GetProgramID();
-    // Include both device info and program id in cache path to handle both GPU changes and
-    // different games
-    const auto cache_file_path =
-        fmt::format("{}{:016X}-{:X}{:X}.bin", cache_dir, program_id, vendor_id, device_id);
-
-    FileUtil::IOFile cache_file{cache_file_path, "wb"};
-    if (!cache_file.IsOpen()) {
-        LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
-        return;
-    }
-
-    const vk::Device device = instance.GetDevice();
-    const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
-    if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
-        LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
-        return;
-    }
+    const auto path = fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
+                                  instance.GetVendorID(), instance.GetDeviceID());
+    SavePipelineCacheSnapshot(instance.GetDevice(), *driver_pipeline_cache, path, false);
 }
+
+#ifdef IOS
+void PipelineCache::MaybeCheckpointDriverPipelineCache() {
+    // Check the clock only occasionally in the hot draw path.
+    if ((++cache_checkpoint_draws & 1023) != 0)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_cache_checkpoint || !Settings::values.use_disk_shader_cache ||
+        !driver_pipeline_cache || cache_checkpoint_pending.exchange(true))
+        return;
+    next_cache_checkpoint = now + std::chrono::seconds(30);
+    const auto path = fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
+                                  instance.GetVendorID(), instance.GetDeviceID());
+    const auto device = instance.GetDevice();
+    const auto cache = *driver_pipeline_cache;
+    pipeline_workers.QueueWork([this, device, cache, path] {
+        SavePipelineCacheSnapshot(device, cache, path, true);
+        cache_checkpoint_pending.store(false);
+    });
+}
+#endif
 
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
@@ -408,6 +469,9 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
 
 bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     MICROPROFILE_SCOPE(Vulkan_Bind);
+#ifdef IOS
+    MaybeCheckpointDriverPipelineCache();
+#endif
 
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
         info.state.shader_ids[i] = shader_hashes[i];

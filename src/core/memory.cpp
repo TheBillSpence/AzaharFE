@@ -5,6 +5,10 @@
 #include <array>
 #include <csignal>
 #include <cstring>
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+#include <cstdlib>
+#include <new>
+#endif
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/binary_object.hpp>
 #include "audio_core/dsp_interface.h"
@@ -103,14 +107,40 @@ private:
     }
 };
 
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+// Every aliasable RAM allocation begins on a 16 KiB host page boundary.
+// Keep zero initialization and ownership identical to the original arrays.
+struct IOSRamDeleter {
+    void operator()(u8* ptr) const noexcept {
+        std::free(ptr);
+    }
+};
+using IOSRam = std::unique_ptr<u8[], IOSRamDeleter>;
+
+static IOSRam AllocateIOSRam(std::size_t size) {
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, Core::IOSFastmemArena::HostPage, size) != 0)
+        throw std::bad_alloc{};
+    std::memset(ptr, 0, size);
+    return IOSRam{static_cast<u8*>(ptr)};
+}
+#endif
+
 class MemorySystem::Impl {
 public:
     // Visual Studio would try to allocate these on compile time
     // if they are std::array which would exceed the memory limit.
+#if defined(IOS) && defined(__APPLE__) && defined(__aarch64__)
+    IOSRam fcram = AllocateIOSRam(Memory::FCRAM_N3DS_SIZE);
+    IOSRam vram = AllocateIOSRam(Memory::VRAM_SIZE);
+    IOSRam n3ds_extra_ram = AllocateIOSRam(Memory::N3DS_EXTRA_RAM_SIZE);
+    IOSRam dsp_ram = AllocateIOSRam(Memory::DSP_RAM_SIZE);
+#else
     std::unique_ptr<u8[]> fcram = std::make_unique<u8[]>(Memory::FCRAM_N3DS_SIZE);
     std::unique_ptr<u8[]> vram = std::make_unique<u8[]>(Memory::VRAM_SIZE);
     std::unique_ptr<u8[]> n3ds_extra_ram = std::make_unique<u8[]>(Memory::N3DS_EXTRA_RAM_SIZE);
     std::unique_ptr<u8[]> dsp_ram = std::make_unique<u8[]>(Memory::DSP_RAM_SIZE);
+#endif
 
     Core::System& system;
     std::shared_ptr<PageTable> current_page_table = nullptr;

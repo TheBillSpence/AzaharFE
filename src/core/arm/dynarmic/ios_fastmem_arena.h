@@ -89,20 +89,32 @@ public:
         if (!base || pending.empty()) {
             return;
         }
-        std::sort(pending.begin(), pending.end());
+        if (!std::is_sorted(pending.begin(), pending.end())) {
+            std::sort(pending.begin(), pending.end());
+        }
         std::size_t i = 0;
         while (i < pending.size()) {
             const auto group = pending[i];
             const auto source = Source(pages, group);
             dirty[group] = 0;
             if (!source) {
-                // Drop an obsolete alias rather than retaining freed backing pages.
-                if (aliased[group] &&
-                    mmap(reinterpret_cast<void*>(base + group * HostPage), HostPage, PROT_NONE,
-                         MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
-                    aliased[group] = 0;
+                // Drop contiguous obsolete aliases in one VM operation.
+                std::size_t end = i + 1;
+                if (aliased[group]) {
+                    while (end < pending.size() && pending[end] == group + end - i &&
+                           aliased[pending[end]] && !Source(pages, pending[end])) {
+                        dirty[pending[end]] = 0;
+                        ++end;
+                    }
+                    if (mmap(reinterpret_cast<void*>(base + group * HostPage),
+                             (end - i) * HostPage, PROT_NONE,
+                             MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
+                        for (auto k = i; k < end; ++k) {
+                            aliased[pending[k]] = 0;
+                        }
+                    }
                 }
-                ++i;
+                i = end;
                 continue;
             }
             std::size_t end = i + 1;
@@ -119,13 +131,23 @@ public:
                 vm_remap(mach_task_self(), &target, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
                          mach_task_self(), static_cast<vm_address_t>(source), FALSE, &current,
                          &maximum, VM_INHERIT_NONE);
-            if (result == KERN_SUCCESS && target == expected &&
-                vm_protect(mach_task_self(), target, size, FALSE, VM_PROT_READ | VM_PROT_WRITE) ==
-                    KERN_SUCCESS) {
+            if (result == KERN_SUCCESS && target == expected) {
+                const bool writable =
+                    vm_protect(mach_task_self(), target, size, FALSE,
+                               VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
                 for (auto k = i; k < end; ++k) {
-                    valid[pending[k]] = 1;
                     aliased[pending[k]] = 1;
-                    ++mapped_groups;
+                    if (writable) {
+                        valid[pending[k]] = 1;
+                        ++mapped_groups;
+                    }
+                }
+                if (!writable &&
+                    mmap(reinterpret_cast<void*>(expected), size, PROT_NONE,
+                         MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
+                    for (auto k = i; k < end; ++k) {
+                        aliased[pending[k]] = 0;
+                    }
                 }
             }
             i = end;

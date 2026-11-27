@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifdef IOS
+#include <shared_mutex>
+#endif
+
 #include "common/hash.h"
 #include "common/thread_worker.h"
 #include "video_core/pica/regs_pipeline.h"
@@ -44,6 +48,11 @@ private:
 } // namespace Common
 
 namespace Vulkan {
+
+#ifdef IOS
+// Pipeline creation can remain concurrent; cache snapshots require exclusive access.
+inline std::shared_mutex driver_pipeline_cache_mutex;
+#endif
 
 class Instance;
 class RenderManager;

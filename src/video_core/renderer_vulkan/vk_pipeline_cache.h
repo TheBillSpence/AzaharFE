@@ -5,6 +5,9 @@
 #pragma once
 
 #include <bitset>
+#ifdef IOS
+#include <chrono>
+#endif
 #include <unordered_set>
 
 #include "video_core/rasterizer_interface.h"
@@ -118,6 +121,9 @@ private:
 
     /// Stores the generated pipeline cache
     void SaveDriverPipelineDiskCache();
+#ifdef IOS
+    void MaybeCheckpointDriverPipelineCache();
+#endif
 
     /// Loads the shader disk cache
     void LoadDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
@@ -162,6 +168,12 @@ private:
 
     Pica::Shader::Profile profile{};
     vk::UniquePipelineCache driver_pipeline_cache;
+#ifdef IOS
+    std::chrono::steady_clock::time_point next_cache_checkpoint =
+        std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    std::atomic<bool> cache_checkpoint_pending{false};
+    u32 cache_checkpoint_draws = 0;
+#endif
     vk::UniquePipelineLayout pipeline_layout;
     std::size_t num_worker_threads;
     Common::ThreadWorker pipeline_workers;

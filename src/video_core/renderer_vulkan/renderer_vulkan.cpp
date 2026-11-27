@@ -262,10 +262,8 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
 
         DrawScreens(frame, layout, flipped);
         scheduler.Flush(frame->render_ready);
-#if defined(IOS) && defined(HAVE_LIBRETRO)
-        // Readback is submitted on the same queue immediately after Present.
-        scheduler.WaitWorker();
-#endif
+        // The iOS LibRetro presenter orders its own GPU work behind this
+        // flush; compatibility/readback modes retain the worker wait there.
         window.Present(frame);
         if ((secondaryWindowEnabled && isSecondaryWindow) || (!secondaryWindowEnabled)) {
             Core::PerfStats::game_frames_updated = false;

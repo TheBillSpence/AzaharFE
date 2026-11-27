@@ -60,6 +60,8 @@ static std::atomic<bool> gAzaharJITHyper{false};
 // Set immediately before a JIT Run on the same emulation thread. Dynarmic's
 // GetTicksRemaining callback reads this limit inside the generated prelude.
 static thread_local std::uint64_t gAzaharJITBudgetCap = 64;
+// Sample once per guest execution slice rather than on every timer query.
+static thread_local bool gAzaharJITBudgetActive = false;
 
 // AzaharFE run registry: active JITs are registered without holding the
 // mutex during generated code. HaltExecution only requests a safe exit.
@@ -340,16 +342,14 @@ public:
 #endif
         parent.GetTimer().AddTicks(ticks);
 #ifdef IOS
-        if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
-            if (add_tick_reports < 3) {
-                ++add_tick_reports;
-                char info[160];
-                std::snprintf(info, sizeof(info),
-                              "JIT27TRACE AddTicks(%llu) core=%u remaining=%lld",
-                              static_cast<unsigned long long>(ticks), parent.GetID(),
-                              static_cast<long long>(parent.GetTimer().GetDowncount()));
-                LibRetro::DisplayMessage(info);
-            }
+        if (add_tick_reports < 3 &&
+            gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
+            ++add_tick_reports;
+            char info[160];
+            std::snprintf(info, sizeof(info), "JIT27TRACE AddTicks(%llu) core=%u remaining=%lld",
+                          static_cast<unsigned long long>(ticks), parent.GetID(),
+                          static_cast<long long>(parent.GetTimer().GetDowncount()));
+            LibRetro::DisplayMessage(info);
         }
 #endif
     }
@@ -360,7 +360,7 @@ public:
 #endif
         const s64 ticks = parent.GetTimer().GetDowncount();
 #ifdef IOS
-        if (gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
+        if (gAzaharJITBudgetActive) {
             // Adaptive diagnostic: the Run caller ramps the cap only after
             // previous short runs returned successfully. Keep this per-thread
             // so other emulator threads cannot overwrite the active budget.
@@ -443,10 +443,12 @@ void ARM_Dynarmic::Run() {
     }
 #endif
     AzaharScopedJITRun active_jit{jit};
+    gAzaharJITBudgetActive = gAzaharJITFullRunStarted.load(std::memory_order_relaxed);
     if (gAzaharJITTurboStartup.load(std::memory_order_relaxed)) {
         // Experimental direct startup: maintain timer limits and the JIT halt
         // bridge. Only the obsolete instruction-by-instruction probes are skipped.
         const bool first_run = !gAzaharJITFullRunStarted.exchange(true, std::memory_order_relaxed);
+        gAzaharJITBudgetActive = true;
         const bool video_started = LibRetro::HasSubmittedSoftwareFrame();
         gAzaharJITBudgetCap = gAzaharJITHyper.load(std::memory_order_relaxed)
                                   ? HyperJitCap(video_started)
@@ -554,6 +556,7 @@ void ARM_Dynarmic::Run() {
         gAzaharJITBudgetCap = probe >= kTargetRun + kTargetStepCount ? 256 : kBudgets[stage];
         if (probe == kStepProbeCount) {
             gAzaharJITFullRunStarted.store(true, std::memory_order_release);
+            gAzaharJITBudgetActive = true;
         }
         // Sample every run in the 16K stage: the previous black screen was
         // observed between its first return and the next stage marker.
@@ -617,6 +620,7 @@ void ARM_Dynarmic::Step() {
     }
 #endif
     AzaharScopedJITRun active_step{jit};
+    gAzaharJITBudgetActive = gAzaharJITFullRunStarted.load(std::memory_order_relaxed);
 #endif
     jit->Step();
 #ifdef IOS
