@@ -73,11 +73,13 @@ Shader::~Shader() {
 }
 
 GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& renderpass_cache_,
-                                   const PipelineInfo& info_, vk::PipelineCache pipeline_cache_,
+                                   const PipelineInfo& info_,
+                                   std::shared_ptr<vk::UniquePipelineCache> pipeline_cache_,
                                    vk::PipelineLayout layout_, std::array<Shader*, 3> stages_,
                                    Common::ThreadWorker* worker_)
     : instance{instance_}, renderpass_cache{renderpass_cache_}, worker{worker_},
-      pipeline_layout{layout_}, pipeline_cache{pipeline_cache_}, info{info_}, stages{stages_} {}
+      pipeline_layout{layout_}, pipeline_cache{std::move(pipeline_cache_)}, info{info_},
+      stages{stages_} {}
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
@@ -306,9 +308,18 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     }
 
 #ifdef IOS
-    std::shared_lock cache_lock{driver_pipeline_cache_mutex};
+    std::shared_lock cache_lock{driver_pipeline_cache_mutex, std::defer_lock};
+    if (fail_on_compile_required) {
+        // A background checkpoint must not stall the opportunistic fast build.
+        if (!cache_lock.try_lock()) {
+            return false;
+        }
+    } else {
+        cache_lock.lock();
+    }
 #endif
-    auto result = instance.GetDevice().createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    const vk::PipelineCache cache = pipeline_cache ? **pipeline_cache : vk::PipelineCache{};
+    auto result = instance.GetDevice().createGraphicsPipelineUnique(cache, pipeline_info);
     if (result.result == vk::Result::eSuccess) {
         pipeline = std::move(result.value);
     } else if (result.result == vk::Result::eErrorPipelineCompileRequiredEXT) {
@@ -317,6 +328,8 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         UNREACHABLE_MSG("Graphics pipeline creation failed!");
     }
 
+    // A built pipeline no longer needs the driver cache; allow old titles to release it.
+    pipeline_cache.reset();
     MarkDone();
     return true;
 }

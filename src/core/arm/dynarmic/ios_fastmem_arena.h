@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -75,6 +76,8 @@ public:
     void Reset() {
         valid.fill(0);
         mapped_groups = 0;
+        retry_pending.clear();
+        retry_poll = 0;
         if (!base) {
             return;
         }
@@ -86,9 +89,27 @@ public:
     }
 
     void Sync(const std::array<std::uint8_t*, GuestPages>& pages) {
-        if (!base || pending.empty()) {
+        if (!base) {
             return;
         }
+        // Retry transient VM failures without repeatedly calling Mach APIs on every JIT slice.
+        if (!retry_pending.empty() && (++retry_poll & 255) == 0 &&
+            std::chrono::steady_clock::now() >= retry_at) {
+            pending.insert(pending.end(), retry_pending.begin(), retry_pending.end());
+            retry_pending.clear();
+        }
+        if (pending.empty()) {
+            return;
+        }
+        const auto retry = [this](std::size_t first, std::size_t last) {
+            if (retry_pending.empty()) {
+                retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+            }
+            for (auto k = first; k < last; ++k) {
+                dirty[pending[k]] = 1;
+                retry_pending.push_back(pending[k]);
+            }
+        };
         if (!std::is_sorted(pending.begin(), pending.end())) {
             std::sort(pending.begin(), pending.end());
         }
@@ -106,12 +127,13 @@ public:
                         dirty[pending[end]] = 0;
                         ++end;
                     }
-                    if (mmap(reinterpret_cast<void*>(base + group * HostPage),
-                             (end - i) * HostPage, PROT_NONE,
-                             MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
+                    if (mmap(reinterpret_cast<void*>(base + group * HostPage), (end - i) * HostPage,
+                             PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
                         for (auto k = i; k < end; ++k) {
                             aliased[pending[k]] = 0;
                         }
+                    } else {
+                        retry(i, end);
                     }
                 }
                 i = end;
@@ -132,9 +154,8 @@ public:
                          mach_task_self(), static_cast<vm_address_t>(source), FALSE, &current,
                          &maximum, VM_INHERIT_NONE);
             if (result == KERN_SUCCESS && target == expected) {
-                const bool writable =
-                    vm_protect(mach_task_self(), target, size, FALSE,
-                               VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
+                const bool writable = vm_protect(mach_task_self(), target, size, FALSE,
+                                                 VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS;
                 for (auto k = i; k < end; ++k) {
                     aliased[pending[k]] = 1;
                     if (writable) {
@@ -142,13 +163,17 @@ public:
                         ++mapped_groups;
                     }
                 }
-                if (!writable &&
-                    mmap(reinterpret_cast<void*>(expected), size, PROT_NONE,
-                         MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
-                    for (auto k = i; k < end; ++k) {
-                        aliased[pending[k]] = 0;
+                if (!writable) {
+                    if (mmap(reinterpret_cast<void*>(expected), size, PROT_NONE,
+                             MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != MAP_FAILED) {
+                        for (auto k = i; k < end; ++k) {
+                            aliased[pending[k]] = 0;
+                        }
                     }
+                    retry(i, end);
                 }
+            } else {
+                retry(i, end);
             }
             i = end;
         }
@@ -219,5 +244,8 @@ private:
     std::size_t mapped_groups = 0;
     bool reported = false;
     std::vector<std::size_t> pending;
+    std::vector<std::size_t> retry_pending;
+    std::chrono::steady_clock::time_point retry_at{};
+    unsigned retry_poll = 0;
 };
 } // namespace Core

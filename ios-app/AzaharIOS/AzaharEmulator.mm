@@ -152,10 +152,13 @@ static std::atomic<bool> sJITProbeFailed{false};
     decltype(&azahar_ios_vk_separate_present_queue) _vkSeparatePresentQueue;
     decltype(&azahar_ios_vk_present_frame) _vkPresentFrame;
     decltype(&azahar_ios_vk_present_extent) _vkPresentExtent;
+    decltype(&azahar_ios_vk_presented_count) _vkPresentedCount;
     unsigned _lastSurfaceWidth, _lastSurfaceHeight;
     CGSize _lastRequestedSurface;
     bool _metalActive;
     unsigned _metalPending, _metalAttempts, _metalSubmitted, _metalWidth, _metalHeight;
+    unsigned _metalObserved, _metalQueuedWidth, _metalQueuedHeight;
+    std::chrono::steady_clock::time_point _metalBusySince;
     CGSize _metalDisplaySize;
     BOOL _displayLandscape;
     NSDictionary *_displayOptions;
@@ -422,6 +425,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _vkRequested = false;
         _metalActive = false;
         _metalPending = _metalAttempts = _metalSubmitted = _metalWidth = _metalHeight = 0;
+        _metalObserved = _metalQueuedWidth = _metalQueuedHeight = 0;
+        _metalBusySince = {};
         _lastSurfaceWidth = _lastSurfaceHeight = 0;
         _lastRequestedSurface = CGSizeZero;
         _cachedDisplayRevision = UINT64_MAX;
@@ -587,6 +592,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             dlsym(_libraryHandle, "azahar_ios_vk_present_frame"));
         _vkPresentExtent = reinterpret_cast<decltype(_vkPresentExtent)>(
             dlsym(_libraryHandle, "azahar_ios_vk_present_extent"));
+        _vkPresentedCount = reinterpret_cast<decltype(_vkPresentedCount)>(
+            dlsym(_libraryHandle, "azahar_ios_vk_presented_count"));
         _vkReadbackFailed = reinterpret_cast<decltype(_vkReadbackFailed)>(
             dlsym(_libraryHandle, "azahar_ios_vk_readback_failed"));
         _vkDrainReadback = reinterpret_cast<decltype(_vkDrainReadback)>(
@@ -625,12 +632,20 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 [self writeDiagnostic:@"LIFECYCLE stopping audio"];
                 [self replaceAudioWithSampleRate:0];
                 if (_vkRequested && _vkDrainReadback && !_vkDrainReadback()) {
-                    [self reportJITStage:@"Vulkan GPU copy is still pending. Waiting on worker; restart is blocked until safe teardown."];
+                    [self reportJITStage:@"Vulkan worker or GPU copy is still pending. Restart is blocked until safe teardown; if it remains stuck, export diagnostics and reopen the app."];
                     // Never unload the core or free a source image while the
                     // driver's submission could still access it. Keep the
                     // session owned and the UI responsive if the GPU is stuck.
-                    while (!_vkDrainReadback())
+                    const auto drainStarted = std::chrono::steady_clock::now();
+                    bool reportedStall = false;
+                    while (!_vkDrainReadback()) {
+                        if (!reportedStall && std::chrono::steady_clock::now() - drainStarted >=
+                                                  std::chrono::seconds(5)) {
+                            reportedStall = true;
+                            [self writeDiagnostic:@"STALL27 Vulkan teardown blocked; core and GPU resources retained"];
+                        }
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
                     [self writeDiagnostic:@"LIFECYCLE pending Vulkan copy drained"];
                 }
                 [self writeDiagnostic:@"LIFECYCLE unloading game"];
@@ -650,6 +665,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             if (_vkShutdown) _vkShutdown();
             [self writeDiagnostic:@"LIFECYCLE core and graphics teardown complete"];
             _vkInterface = nullptr;
+            _metalActive = false;
             if (_stopping.load()) break;
             if (failure) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -720,9 +736,11 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         !_vkNegotiation || !_vkRenderCallback.context_reset) return NO;
     try {
         NSString *presentation = self.launchOptions[@"AzaharPresentation"];
-        const bool asynchronous = [presentation isEqual:@"metal"];
+        const bool wantsAsync = [presentation isEqual:@"metal"];
+        // Older cores cannot report completed asynchronous presents; retain sync compatibility.
+        const bool asynchronous = wantsAsync && _vkPresentedCount && _vkSetAsyncPresent;
         _metalActive = _vkSetMetalLayer && _vkPresentFrame && self.metalLayer &&
-            (asynchronous || [presentation isEqual:@"metal_sync"]);
+            (wantsAsync || [presentation isEqual:@"metal_sync"]);
         if (_vkSetAsyncPresent) _vkSetAsyncPresent(asynchronous);
         if (_metalActive) _vkSetMetalLayer((__bridge void *)self.metalLayer);
         if (!_vkStart(_vkNegotiation)) return NO;
@@ -844,6 +862,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             previousImages = _deliveredImages.load();
         }
         if (_paused.load()) {
+            _metalBusySince = {};
             if (!_pauseAcknowledged.exchange(true))
                 [self writeDiagnostic:@"LIFECYCLE pause acknowledged by emulation worker"];
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -858,6 +877,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         }
         _returnedFrames.fetch_add(1, std::memory_order_relaxed);
         _gameplayPhase.store(0, std::memory_order_relaxed);
+        // A worker can accept a drawable after the last video callback.
+        if (_metalActive && _vkPresentedCount)
+            [self acceptMetalPresentations:_vkPresentedCount()];
         const auto now = std::chrono::steady_clock::now();
         if (_stopping.load() || LibRetro::CheckReadback(_readbackFailures, _receivedFirstVideo) !=
                                 LibRetro::ReadbackRecovery::Continue) break;
@@ -887,7 +909,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 }
                 if (_metalAttempts) {
                     [self writeDiagnostic:[NSString stringWithFormat:
-                        @"Metal surface: %u attempts, %u accepted submissions (%.1f/s); not unique game frames or measured display scanout",
+                        @"Metal surface: %u attempts, %u accepted queue presents (%.1f/s); not unique game frames or measured display scanout",
                         _metalAttempts, _metalSubmitted, _metalSubmitted / seconds]];
                 }
                 _metalAttempts = _metalSubmitted = 0;
@@ -1045,6 +1067,33 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)setPointerX:(int16_t)x y:(int16_t)y pressed:(BOOL)down { _input.Touch({x, y, down != NO}); }
 - (void)setCircleX:(int16_t)x y:(int16_t)y { _input.Circle(x, y); }
 
+- (void)acceptMetalPresentations:(unsigned)total {
+    const unsigned accepted = total - _metalObserved;
+    if (!accepted) return;
+    _metalObserved = total;
+    _metalSubmitted += accepted;
+    _metalPending = 0;
+    _metalBusySince = {};
+    _readbackFailures = 0;
+    const unsigned width = _metalQueuedWidth, height = _metalQueuedHeight;
+    if (!_receivedFirstVideo) {
+        _receivedFirstVideo = YES;
+        _waitingForFirstFrame.store(false);
+        [self reportJITStage:[NSString stringWithFormat:
+            @"First GPU-only Metal queue present accepted: %u x %u", width, height]];
+    }
+    if (_metalWidth != width || _metalHeight != height) {
+        _metalWidth = width;
+        _metalHeight = height;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id<AzaharEmulatorDelegate> delegate = self.delegate;
+            if (!_stopping.load() &&
+                [delegate respondsToSelector:@selector(azaharEmulatorDidPresentMetalFrameWidth:height:)])
+                [delegate azaharEmulatorDidPresentMetalFrameWidth:width height:height];
+        });
+    }
+}
+
 - (void)receiveVideo:(const void *)data width:(unsigned)width
                height:(unsigned)height pitch:(size_t)pitch {
     if (!data || width == 0 || height == 0 || width > 4096 || height > 4096 ||
@@ -1060,6 +1109,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     const BOOL hardware = data == RETRO_HW_FRAME_BUFFER_VALID;
     if (hardware && _metalActive) {
         _gameplayPhase.store(2, std::memory_order_relaxed);
+        if (_vkPresentedCount) [self acceptMetalPresentations:_vkPresentedCount()];
         CGSize size;
         BOOL landscape = NO;
         NSDictionary *options = nil;
@@ -1108,29 +1158,25 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 }
             }
             if (result == 1) {
-                ++_metalSubmitted;
-                _metalPending = 0;
-                _readbackFailures = 0;
-                if (!_receivedFirstVideo) {
-                    _receivedFirstVideo = YES;
-                    _waitingForFirstFrame.store(false);
-                    [self reportJITStage:[NSString stringWithFormat:
-                        @"First GPU-only Metal surface submission: %u x %u", width, height]];
-                }
-                if (_metalWidth != width || _metalHeight != height) {
-                    _metalWidth=width; _metalHeight=height;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        id<AzaharEmulatorDelegate> delegate = self.delegate;
-                        if (!_stopping.load() &&
-                            [delegate respondsToSelector:@selector(azaharEmulatorDidPresentMetalFrameWidth:height:)])
-                            [delegate azaharEmulatorDidPresentMetalFrameWidth:width height:height];
-                    });
-                }
-                return;
+                _metalQueuedWidth = width;
+                _metalQueuedHeight = height;
+                if (!_vkPresentedCount)
+                    [self acceptMetalPresentations:_metalObserved + 1];
             }
-            if (result == 0 && ++_metalPending < 120) return;
-        } else if (++_metalPending < 120) {
-            return;
+            if (_vkPresentedCount) [self acceptMetalPresentations:_vkPresentedCount()];
+            if (result >= 0) {
+                ++_metalPending;
+                const auto now = std::chrono::steady_clock::now();
+                if (_metalBusySince == std::chrono::steady_clock::time_point{})
+                    _metalBusySince = now;
+                if (now - _metalBusySince < std::chrono::seconds(2)) return;
+            }
+        } else {
+            ++_metalPending;
+            const auto now = std::chrono::steady_clock::now();
+            if (_metalBusySince == std::chrono::steady_clock::time_point{})
+                _metalBusySince = now;
+            if (now - _metalBusySince < std::chrono::seconds(2)) return;
         }
         _metalActive = false;
         unsigned stage = 0;

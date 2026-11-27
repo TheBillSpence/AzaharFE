@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <memory>
 #ifdef IOS
 #include <shared_mutex>
 #endif
@@ -326,7 +327,8 @@ struct Shader : public Common::AsyncHandle {
 class GraphicsPipeline : public Common::AsyncHandle {
 public:
     explicit GraphicsPipeline(const Instance& instance, RenderManager& renderpass_cache,
-                              const PipelineInfo& info, vk::PipelineCache pipeline_cache,
+                              const PipelineInfo& info,
+                              std::shared_ptr<vk::UniquePipelineCache> pipeline_cache,
                               vk::PipelineLayout layout, std::array<Shader*, 3> stages,
                               Common::ThreadWorker* worker);
     ~GraphicsPipeline();
@@ -346,7 +348,8 @@ private:
 
     vk::UniquePipeline pipeline;
     vk::PipelineLayout pipeline_layout;
-    vk::PipelineCache pipeline_cache;
+    // Deferred compilation can outlive a title-cache switch.
+    std::shared_ptr<vk::UniquePipelineCache> pipeline_cache;
 
     PipelineInfo info;
     std::array<Shader*, 3> stages;

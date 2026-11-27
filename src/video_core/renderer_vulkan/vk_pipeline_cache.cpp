@@ -2,9 +2,9 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
-#include <boost/container/static_vector.hpp>
 #include <exception>
 #include <mutex>
+#include <boost/container/static_vector.hpp>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -181,7 +181,8 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
     if (!driver_pipeline_cache) {
         vk::PipelineCacheCreateInfo cache_info{};
         try {
-            driver_pipeline_cache = instance.GetDevice().createPipelineCacheUnique(cache_info);
+            driver_pipeline_cache = std::make_shared<vk::UniquePipelineCache>(
+                instance.GetDevice().createPipelineCacheUnique(cache_info));
         } catch (const vk::SystemError& err) {
             LOG_ERROR(Render_Vulkan, "Failed to create pipeline cache: {}", err.what());
             return;
@@ -252,7 +253,8 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     auto load_cache = [this, &cache_info, &callback](bool allow_fallback) {
         const vk::Device device = instance.GetDevice();
         try {
-            driver_pipeline_cache = device.createPipelineCacheUnique(cache_info);
+            driver_pipeline_cache = std::make_shared<vk::UniquePipelineCache>(
+                device.createPipelineCacheUnique(cache_info));
         } catch (const vk::SystemError& err) {
             LOG_ERROR(Render_Vulkan, "Failed to create pipeline cache: {}", err.what());
             if (allow_fallback) {
@@ -260,7 +262,8 @@ void PipelineCache::LoadDriverPipelineDiskCache(
                 cache_info.initialDataSize = 0;
                 cache_info.pInitialData = nullptr;
                 try {
-                    driver_pipeline_cache = device.createPipelineCacheUnique(cache_info);
+                    driver_pipeline_cache = std::make_shared<vk::UniquePipelineCache>(
+                        device.createPipelineCacheUnique(cache_info));
                 } catch (const vk::SystemError& err) {
                     LOG_ERROR(Render_Vulkan, "Failed to create fallback pipeline cache: {}",
                               err.what());
@@ -329,8 +332,8 @@ void PipelineCache::LoadDriverPipelineDiskCache(
 }
 
 namespace {
-void SavePipelineCacheSnapshot(vk::Device device, vk::PipelineCache cache,
-                               const std::string& path, bool opportunistic) {
+void SavePipelineCacheSnapshot(vk::Device device, vk::PipelineCache cache, const std::string& path,
+                               bool opportunistic) {
     try {
         std::vector<u8> data;
 #ifdef IOS
@@ -342,7 +345,20 @@ void SavePipelineCacheSnapshot(vk::Device device, vk::PipelineCache cache,
             } else {
                 lock.lock();
             }
-            data = device.getPipelineCacheData(cache);
+            // Query the size first: do not allocate or write a cache that the next launch
+            // would reject. The exclusive lock keeps the cache stable across both calls.
+            std::size_t size = 0;
+            constexpr std::size_t max_cache_size = 128ULL * 1024 * 1024;
+            if (device.getPipelineCacheData(cache, &size, nullptr) != vk::Result::eSuccess ||
+                size < sizeof(VkPipelineCacheHeaderVersionOne) || size > max_cache_size) {
+                return;
+            }
+            data.resize(size);
+            if (device.getPipelineCacheData(cache, &size, data.data()) != vk::Result::eSuccess ||
+                size < sizeof(VkPipelineCacheHeaderVersionOne) || size > data.size()) {
+                return;
+            }
+            data.resize(size);
         }
 #else
         (void)opportunistic;
@@ -375,7 +391,7 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
     }
     const auto path = fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
                                   instance.GetVendorID(), instance.GetDeviceID());
-    SavePipelineCacheSnapshot(instance.GetDevice(), *driver_pipeline_cache, path, false);
+    SavePipelineCacheSnapshot(instance.GetDevice(), **driver_pipeline_cache, path, false);
 }
 
 #ifdef IOS
@@ -385,15 +401,16 @@ void PipelineCache::MaybeCheckpointDriverPipelineCache() {
         return;
     const auto now = std::chrono::steady_clock::now();
     if (now < next_cache_checkpoint || !Settings::values.use_disk_shader_cache ||
-        !driver_pipeline_cache || cache_checkpoint_pending.exchange(true))
+        !driver_pipeline_cache || !shader_workers.IsIdle() || !pipeline_workers.IsIdle() ||
+        cache_checkpoint_pending.exchange(true))
         return;
     next_cache_checkpoint = now + std::chrono::seconds(30);
     const auto path = fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
                                   instance.GetVendorID(), instance.GetDeviceID());
     const auto device = instance.GetDevice();
-    const auto cache = *driver_pipeline_cache;
+    const auto cache = driver_pipeline_cache;
     pipeline_workers.QueueWork([this, device, cache, path] {
-        SavePipelineCacheSnapshot(device, cache, path, true);
+        SavePipelineCacheSnapshot(device, **cache, path, true);
         cache_checkpoint_pending.store(false);
     });
 }
@@ -469,9 +486,6 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
 
 bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     MICROPROFILE_SCOPE(Vulkan_Bind);
-#ifdef IOS
-    MaybeCheckpointDriverPipelineCache();
-#endif
 
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
         info.state.shader_ids[i] = shader_hashes[i];
@@ -481,6 +495,12 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     if (!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) {
         return false;
     }
+#ifdef IOS
+    // Checkpoint only during already-compiled draws and idle compilation queues.
+    if (pipeline->IsDone()) {
+        MaybeCheckpointDriverPipelineCache();
+    }
+#endif
 
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
@@ -703,7 +723,7 @@ bool PipelineCache::IsCacheValid(std::span<const u8> data) const {
 
     vk::PipelineCacheHeaderVersionOne header;
     std::memcpy(&header, data.data(), sizeof(header));
-    if (header.headerSize < sizeof(header)) {
+    if (header.headerSize < sizeof(header) || header.headerSize > data.size()) {
         LOG_ERROR(Render_Vulkan, "Pipeline cache failed validation: Invalid header length");
         return false;
     }

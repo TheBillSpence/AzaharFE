@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -40,6 +41,11 @@ public:
     /// Waits for the worker thread to finish executing everything. After this function returns it's
     /// safe to touch worker resources.
     void WaitWorker();
+
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    // Wait only for already-dispatched work; never enqueue or block indefinitely.
+    bool WaitDispatchedWorkFor(std::chrono::milliseconds timeout);
+#endif
 
     /// Waits for the given tick to trigger on the GPU.
     void Wait(u64 tick);
@@ -202,7 +208,11 @@ private:
     StateFlags state{};
     std::function<void()> on_submit;
     std::function<void()> on_dispatch;
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    std::timed_mutex execution_mutex;
+#else
     std::mutex execution_mutex;
+#endif
     std::mutex reserve_mutex;
     std::mutex queue_mutex;
     std::condition_variable_any event_cv;

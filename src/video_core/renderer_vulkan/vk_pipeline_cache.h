@@ -167,7 +167,7 @@ private:
     DescriptorUpdateQueue& update_queue;
 
     Pica::Shader::Profile profile{};
-    vk::UniquePipelineCache driver_pipeline_cache;
+    std::shared_ptr<vk::UniquePipelineCache> driver_pipeline_cache;
 #ifdef IOS
     std::chrono::steady_clock::time_point next_cache_checkpoint =
         std::chrono::steady_clock::now() + std::chrono::seconds(30);

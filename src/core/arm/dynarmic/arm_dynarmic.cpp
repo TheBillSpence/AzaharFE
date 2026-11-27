@@ -342,8 +342,7 @@ public:
 #endif
         parent.GetTimer().AddTicks(ticks);
 #ifdef IOS
-        if (add_tick_reports < 3 &&
-            gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
+        if (add_tick_reports < 3 && gAzaharJITFullRunStarted.load(std::memory_order_relaxed)) {
             ++add_tick_reports;
             char info[160];
             std::snprintf(info, sizeof(info), "JIT27TRACE AddTicks(%llu) core=%u remaining=%lld",

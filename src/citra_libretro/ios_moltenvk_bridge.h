@@ -11,7 +11,8 @@ __attribute__((visibility("default"))) bool azahar_ios_vk_start(const void* nego
 __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface();
 // The frontend retains the CAMetalLayer for the full core lifetime. Rectangles
 // contain normalized source and destination corners (8 floats per rectangle).
-// 1: submitted for display, 0: busy, -1: use CPU readback instead.
+// 1: queued or submitted, 0: busy, -1: use CPU readback instead.
+// The accepted count below advances only after successful queue presentation.
 __attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* layer);
 __attribute__((visibility("default"))) void azahar_ios_vk_set_async_present(bool enabled);
 __attribute__((visibility("default"))) bool azahar_ios_vk_separate_present_queue();
@@ -26,6 +27,8 @@ __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
 // Lock-free diagnostic: 0 idle, 1 validation, 2 rebuild, 3 fences, 4 acquire,
 // 5 recording, 6 queue lock, 7 submit, 8 present.
 __attribute__((visibility("default"))) unsigned azahar_ios_vk_present_stage();
+// Monotonic per-session count of successful queue presents, not physical scanout.
+__attribute__((visibility("default"))) unsigned azahar_ios_vk_presented_count();
 // Actual surface extent in physical pixels, including a rejected extent.
 __attribute__((visibility("default"))) void azahar_ios_vk_present_extent(unsigned* width,
                                                                          unsigned* height);

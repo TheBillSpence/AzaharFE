@@ -33,8 +33,10 @@ namespace {
 std::atomic<unsigned> present_stage{0};
 std::atomic<unsigned> async_worker_stage{0};
 std::atomic<unsigned> async_submit_stage{0};
+std::atomic<unsigned> accepted_presentations{0};
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
 thread_local Vulkan::Scheduler* present_scheduler = nullptr;
+thread_local bool defer_present = false;
 #endif
 struct PresentStageScope {
     ~PresentStageScope() {
@@ -76,13 +78,13 @@ struct Context {
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat image_format = VK_FORMAT_UNDEFINED;
     retro_hw_render_interface_vulkan interface{};
-    std::mutex queue_mutex;
+    std::timed_mutex queue_mutex;
     std::vector<std::uint8_t> pixels;
 #if defined(__APPLE__)
     void* metal_layer = nullptr;
     bool async_present = true;
     VkQueue presentation_queue = VK_NULL_HANDLE;
-    std::mutex presentation_mutex;
+    std::timed_mutex presentation_mutex;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkExtent2D extent{};
@@ -282,7 +284,11 @@ bool CopyOutput(StagingSlot& slot, unsigned width, unsigned height) {
             submit.commandBufferCount = 1;
             submit.pCommandBuffers = &command;
             {
-                std::lock_guard lock{state.queue_mutex};
+                std::unique_lock lock{state.queue_mutex, std::defer_lock};
+                if (!lock.try_lock_for(std::chrono::seconds(2))) {
+                    state.device_failed = true;
+                    return false;
+                }
                 if (vkQueueSubmit(state.queue, 1, &submit, slot.copied) != VK_SUCCESS) {
                     state.device_failed = true;
                     return false;
@@ -409,6 +415,7 @@ void AsyncPresentLoop() {
             async_worker_stage.store(0, std::memory_order_relaxed);
             lock.lock();
             if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+                accepted_presentations.fetch_add(1, std::memory_order_release);
                 if (next && !state.async_stop) {
                     state.async_slot = next;
                     state.async_phase = AsyncPhase::AcquireRequested;
@@ -480,8 +487,7 @@ Context::PresentSlot* FindPresentSlot(bool& failed) {
 // Submit on the existing graphics worker after the renderer submission, before
 // any later command chunk can reuse the source image. No frontend objects or
 // mutable source metadata are accessed here; the recorded blit owns the handles.
-void SubmitAsyncBlit(Context::PresentSlot* slot, Context::PresentSlot* next,
-                     VkSemaphore ready) {
+void SubmitAsyncBlit(Context::PresentSlot* slot, Context::PresentSlot* next, VkSemaphore ready) {
     const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.waitSemaphoreCount = 1;
@@ -805,18 +811,20 @@ extern "C" const void* azahar_ios_vk_get_interface() {
 #if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
 extern "C" void azahar_ios_vk_begin_present(void* opaque_scheduler) {
     auto* scheduler = static_cast<Vulkan::Scheduler*>(opaque_scheduler);
-    bool defer;
     {
         std::lock_guard lock{state.async_mutex};
-        defer = state.async_present && state.surface && !state.async_stop;
+        defer_present = state.async_present && state.surface && !state.async_stop;
     }
-    present_scheduler = defer ? scheduler : nullptr;
-    if (!defer)
-        scheduler->WaitWorker();
+    present_scheduler = scheduler;
+    if (!defer_present && !state.device_failed &&
+        !scheduler->WaitDispatchedWorkFor(std::chrono::seconds(2))) {
+        state.device_failed = true;
+    }
 }
 
 extern "C" void azahar_ios_vk_end_present() {
     present_scheduler = nullptr;
+    defer_present = false;
 }
 #endif
 
@@ -830,8 +838,12 @@ extern "C" int azahar_ios_vk_readback_frame(unsigned width, unsigned height, con
     *pixels = nullptr;
 #if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
     // A fallback must retain the old producer-before-copy ordering.
-    if (present_scheduler)
-        present_scheduler->WaitWorker();
+    if (present_scheduler && defer_present &&
+        !present_scheduler->WaitDispatchedWorkFor(std::chrono::seconds(2))) {
+        state.device_failed = true;
+        RequestAsyncStop();
+        return -1;
+    }
 #endif
 #if defined(__APPLE__)
     // Fallback may be needed because acquisition is stalled. Stop requesting
@@ -1075,12 +1087,11 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
             state.async_phase = AsyncPhase::SubmitQueued;
         }
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
-        if (present_scheduler) {
+        if (present_scheduler && defer_present) {
             // Record only a host callback. Earlier Flush work is ahead of this
             // chunk and future rendering is behind it, even when CPU runs ahead.
-            present_scheduler->Record([slot, next, ready](vk::CommandBuffer) {
-                SubmitAsyncBlit(slot, next, ready);
-            });
+            present_scheduler->Record(
+                [slot, next, ready](vk::CommandBuffer) { SubmitAsyncBlit(slot, next, ready); });
             present_scheduler->DispatchWork();
             return 1;
         }
@@ -1120,7 +1131,11 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
         state.rebuild_surface = true;
         return 0;
     }
-    return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ? 1 : -1;
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        accepted_presentations.fetch_add(1, std::memory_order_release);
+        return 1;
+    }
+    return -1;
 #else
     (void)width;
     (void)height;
@@ -1129,6 +1144,14 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
     (void)rectangles;
     (void)count;
     return -1;
+#endif
+}
+
+extern "C" unsigned azahar_ios_vk_presented_count() {
+#if defined(__APPLE__)
+    return accepted_presentations.load(std::memory_order_acquire);
+#else
+    return 0;
 #endif
 }
 
@@ -1249,6 +1272,7 @@ extern "C" void azahar_ios_vk_shutdown() {
     state.async_stop = state.async_exited = state.async_rebuild = false;
     state.async_slot = state.async_next = nullptr;
     state.async_index = 0;
+    accepted_presentations.store(0, std::memory_order_relaxed);
 #endif
     if (state.instance)
         vkDestroyInstance(state.instance, nullptr);

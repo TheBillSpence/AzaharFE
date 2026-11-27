@@ -102,6 +102,11 @@ public:
         });
     }
 
+    [[nodiscard]] bool IsIdle() const noexcept {
+        return work_done.load(std::memory_order_acquire) >=
+               work_scheduled.load(std::memory_order_acquire);
+    }
+
     const std::size_t NumWorkers() const noexcept {
         return threads.size();
     }

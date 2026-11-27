@@ -91,6 +91,23 @@ void Scheduler::WaitWorker() {
     std::scoped_lock el{execution_mutex};
 }
 
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+bool Scheduler::WaitDispatchedWorkFor(std::chrono::milliseconds timeout) {
+    if (!use_worker_thread) {
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    {
+        std::unique_lock lock{queue_mutex};
+        if (!event_cv.wait_until(lock, deadline, [this] { return work_queue.empty(); })) {
+            return false;
+        }
+    }
+    std::unique_lock lock{execution_mutex, std::defer_lock};
+    return lock.try_lock_until(deadline);
+}
+#endif
+
 void Scheduler::Wait(u64 tick) {
     if (tick >= master_semaphore->CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
@@ -107,7 +124,12 @@ void Scheduler::DispatchWork() {
     on_dispatch();
 
     {
-        std::scoped_lock ql{queue_mutex};
+        std::unique_lock ql{queue_mutex};
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+        // Only apply backpressure when a slow worker has accumulated a backlog.
+        constexpr std::size_t max_queued_chunks = 64;
+        event_cv.wait(ql, [this] { return work_queue.size() < max_queued_chunks; });
+#endif
         work_queue.push(std::move(chunk));
     }
 
@@ -146,7 +168,8 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
             // Exchange lock ownership so that we take the execution lock before
             // the queue lock goes out of scope. This allows us to force execution
             // to complete in the next step.
-            std::exchange(lk, std::unique_lock{execution_mutex});
+            std::unique_lock execution_lock{execution_mutex};
+            lk.unlock();
 
             // Perform the work, tracking whether the chunk was a submission
             // before executing.
@@ -179,6 +202,16 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
 void Scheduler::SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wait_semaphore) {
     state = StateFlags::AllDirty;
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    // Bound outstanding GPU submissions (not emulated FPS). Normal frames
+    // never wait while the GPU keeps up; preserve asynchronous overlap.
+    constexpr u64 max_pending_submissions = 8;
+    const u64 tick = master_semaphore->CurrentTick();
+    if (tick > max_pending_submissions &&
+        !master_semaphore->IsFree(tick - max_pending_submissions)) {
+        master_semaphore->Wait(tick - max_pending_submissions);
+    }
+#endif
     const u64 signal_value = master_semaphore->NextTick();
 
     on_submit();
