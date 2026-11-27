@@ -42,6 +42,39 @@ int main() {
         assert(corner.count == 2 && corner.touchIndex == 1);
         assert(std::abs(corner.destination[0].size.width / corner.destination[0].size.height - 5.0/3) < 0.001);
         assert(CGRectGetMinX(corner.destination[1]) > CGRectGetMaxX(corner.destination[0]));
+        assert(std::abs(CGRectGetMaxX(corner.destination[1])-800) < 0.001);
+        assert(std::abs(CGRectGetMaxY(corner.destination[1])-350) < 0.001);
+        assert(std::abs(corner.destination[1].size.width/corner.destination[1].size.height-4.0/3) < 0.001);
+        // Compare against the exact old corner top rectangle over many view sizes
+        // and touch-size presets, including width-limited and Retina layouts.
+        for (double w : {480.0, 800.0, 1200.0, 2400.0}) {
+            for (double h : {260.0, 350.0, 700.0, 1050.0}) {
+                for (NSString *preset in @[@"15", @"30", @"60"]) {
+                    display[@"AzaharTouchSize"] = preset;
+                    for (NSString *aspect in @[@"native", @"stretch"]) {
+                        display[@"AzaharDisplayAspect"] = aspect;
+                        const bool stretch = [aspect isEqual:@"stretch"];
+                        const double ratio = [preset doubleValue]/100.0;
+                        const double gap = std::min(w,h)*0.012, aw = w-gap;
+                        const double th = std::min(h,aw/(stretch ? ratio*4.0/3+1 : 5.0/3+ratio*4.0/3));
+                        const double bh = th*ratio, bw = bh*4/3;
+                        const double tw = stretch ? aw-bw : th*5/3;
+                        const CGRect oldTop = CGRectMake((w-tw-bw-gap)/2,(h-th)/2,tw,th);
+                        const auto enlarged = AZMakeDisplayGeometry(CGSizeMake(1600,1920),CGSizeMake(w,h),YES,display);
+                        assert(CGRectEqualToRect(enlarged.destination[0],oldTop));
+                        const CGRect touch = enlarged.destination[1];
+                        assert(touch.size.width >= bw-0.001);
+                        assert(touch.size.height >= bh-0.001);
+                        assert(CGRectGetMinX(touch) >= CGRectGetMaxX(oldTop)+gap-0.001);
+                        assert(std::abs(CGRectGetMaxX(touch)-w) < 0.001);
+                        assert(std::abs(CGRectGetMaxY(touch)-h) < 0.001);
+                        if (!stretch) assert(std::abs(touch.size.width/touch.size.height-4.0/3) < 0.001);
+                    }
+                }
+            }
+        }
+        display[@"AzaharTouchSize"] = @"30";
+        display[@"AzaharDisplayAspect"] = @"native";
         display[@"AzaharLandscapeLayout"] = @"stacked";
         const auto stacked = AZMakeDisplayGeometry(CGSizeMake(1600,1920),CGSizeMake(800,350),YES,display);
         assert(stacked.count == 2 && CGRectGetMinY(stacked.destination[1]) > CGRectGetMaxY(stacked.destination[0]));

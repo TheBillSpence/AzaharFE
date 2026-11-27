@@ -55,8 +55,15 @@ inline AZDisplayGeometry AZMakeDisplayGeometry(CGSize image, CGSize view, BOOL l
         result.destination[1] = CGRectMake((w-bw)/2, y+th+gap, bw, bh);
     } else {
         const double x = (w-tw-bw-gap)/2, y = (h-th)/2;
+        // Keep the original top-screen rectangle exactly unchanged. Expand only
+        // the touchscreen into the unused right-hand region and anchor it to
+        // the lower-right edge. Native mode preserves the 320:240 aspect ratio.
         result.destination[0] = CGRectMake(x,y,tw,th);
-        result.destination[1] = CGRectMake(x+tw+gap,y+th-bh,bw,bh);
+        const double rightStart = std::min(w, x+tw+gap);
+        const double freeW = std::max(0.0, w-rightStart);
+        const double touchW = stretch ? freeW : std::min(freeW, h*4.0/3);
+        const double touchH = stretch ? std::min(h, bh*freeW/bw) : touchW*3.0/4;
+        result.destination[1] = CGRectMake(w-touchW,h-touchH,touchW,touchH);
     }
     return result;
 }

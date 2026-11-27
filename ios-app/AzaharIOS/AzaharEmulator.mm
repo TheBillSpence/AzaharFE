@@ -157,6 +157,11 @@ static std::atomic<bool> sJITProbeFailed{false};
     CGSize _metalDisplaySize;
     BOOL _displayLandscape;
     NSDictionary *_displayOptions;
+    uint64_t _displayRevision;
+    // Worker-owned presentation cache; main thread only publishes geometry inputs.
+    uint64_t _cachedDisplayRevision;
+    unsigned _cachedFrameWidth, _cachedFrameHeight, _cachedRectCount;
+    float _cachedPresentRects[16];
     decltype(&azahar_ios_vk_readback_failed) _vkReadbackFailed;
     decltype(&azahar_ios_vk_drain_readback) _vkDrainReadback;
     decltype(&azahar_ios_vk_shutdown) _vkShutdown;
@@ -259,9 +264,12 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (BOOL)jitActive { return _jitEnabled; }
 - (void)setDisplaySize:(CGSize)size landscape:(BOOL)landscape options:(NSDictionary *)options {
     @synchronized (self) {
+        if (CGSizeEqualToSize(_metalDisplaySize, size) && _displayLandscape == landscape &&
+            (_displayOptions == options || [_displayOptions isEqual:options])) return;
         _metalDisplaySize = size;
         _displayLandscape = landscape;
         _displayOptions = [options copy];
+        ++_displayRevision;
     }
 }
 
@@ -414,6 +422,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _metalPending = _metalAttempts = _metalSubmitted = _metalWidth = _metalHeight = 0;
         _lastSurfaceWidth = _lastSurfaceHeight = 0;
         _lastRequestedSurface = CGSizeZero;
+        _cachedDisplayRevision = UINT64_MAX;
+        _cachedFrameWidth = _cachedFrameHeight = _cachedRectCount = 0;
         _readbackFailures = 0;
         _playSession = [NSObject new];
         _completedSlices.store(0);
@@ -749,7 +759,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                     metalStage = host->_vkPresentStage();
             }
             [host writeDiagnostic:[NSString stringWithFormat:
-                @"STALL27 no completed retro_run for ~%u s; phase=%u metalStage=%u slices=%llu frames=%llu video=%llu videoDelta=%llu paused=%d",
+                @"STALL27 no completed retro_run for ~%u s; phase=%u metalStage=%u sliceSamples=%llu frames=%llu video=%llu videoDelta=%llu paused=%d",
                 count*2, phase, metalStage, (unsigned long long)host->_completedSlices.load(),
                 (unsigned long long)frames, (unsigned long long)videos,
                 (unsigned long long)(videos-previousVideos), (int)paused]];
@@ -1037,28 +1047,39 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     if (hardware && _metalActive) {
         _gameplayPhase.store(2, std::memory_order_relaxed);
         CGSize size;
-        BOOL landscape;
-        NSDictionary *options;
+        BOOL landscape = NO;
+        NSDictionary *options = nil;
+        uint64_t revision;
+        bool changed;
         @synchronized (self) {
             size = _metalDisplaySize;
-            landscape = _displayLandscape;
-            options = _displayOptions ?: _gameOptions;
+            revision = _displayRevision;
+            changed = revision != _cachedDisplayRevision ||
+                      width != _cachedFrameWidth || height != _cachedFrameHeight;
+            if (changed) {
+                landscape = _displayLandscape;
+                options = _displayOptions ?: _gameOptions;
+            }
         }
-        const auto geometry = AZMakeDisplayGeometry(CGSizeMake(width,height), size, landscape, options);
-        if (geometry.count && size.width >= 1 && size.height >= 1) {
-            // Compute the same normalized layout as the CPU fallback and touch input.
-            float rect[16]{};
-            for (unsigned n=0; n<geometry.count; ++n) {
+        if (changed) {
+            const auto geometry = AZMakeDisplayGeometry(CGSizeMake(width,height), size, landscape, options);
+            _cachedRectCount = size.width >= 1 && size.height >= 1 ? geometry.count : 0;
+            for (unsigned n=0; n<_cachedRectCount; ++n) {
                 const CGRect src=geometry.source[n], dst=geometry.destination[n];
-                float *r=rect+n*8;
+                float *r=_cachedPresentRects+n*8;
                 r[0]=CGRectGetMinX(src); r[1]=CGRectGetMinY(src);
                 r[2]=CGRectGetMaxX(src); r[3]=CGRectGetMaxY(src);
                 r[4]=CGRectGetMinX(dst)/size.width; r[5]=CGRectGetMinY(dst)/size.height;
                 r[6]=CGRectGetMaxX(dst)/size.width; r[7]=CGRectGetMaxY(dst)/size.height;
             }
+            _cachedDisplayRevision = revision;
+            _cachedFrameWidth = width;
+            _cachedFrameHeight = height;
+        }
+        if (_cachedRectCount) {
             ++_metalAttempts;
             const int result = _vkPresentFrame(width, height, (unsigned)std::lround(size.width),
-                                               (unsigned)std::lround(size.height), rect, geometry.count);
+                                               (unsigned)std::lround(size.height), _cachedPresentRects, _cachedRectCount);
             if (_vkPresentExtent) {
                 unsigned surfaceWidth = 0, surfaceHeight = 0;
                 _vkPresentExtent(&surfaceWidth, &surfaceHeight);
@@ -1173,7 +1194,10 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices {
-    if (slices) {
+    // Count every startup slice as before; sample gameplay progress at the
+    // first slice and every 64 slices instead of a contended atomic RMW on each.
+    if (slices && (_waitingForFirstFrame.load(std::memory_order_relaxed) ||
+                   slices == 1 || (slices & 63) == 0)) {
         _completedSlices.fetch_add(1, std::memory_order_relaxed);
     }
     return _stopping.load() || _paused.load();
