@@ -23,9 +23,6 @@
 #include <vulkan/vulkan_metal.h>
 #endif
 #include "libretro_vulkan.h"
-#if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
-#include "video_core/renderer_vulkan/vk_scheduler.h"
-#endif
 
 namespace {
 #if defined(__APPLE__)
@@ -35,7 +32,7 @@ std::atomic<unsigned> async_worker_stage{0};
 std::atomic<unsigned> async_submit_stage{0};
 std::atomic<unsigned> accepted_presentations{0};
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
-thread_local Vulkan::Scheduler* present_scheduler = nullptr;
+thread_local void* present_scheduler = nullptr;
 thread_local bool defer_present = false;
 #endif
 struct PresentStageScope {
@@ -810,14 +807,13 @@ extern "C" const void* azahar_ios_vk_get_interface() {
 
 #if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
 extern "C" void azahar_ios_vk_begin_present(void* opaque_scheduler) {
-    auto* scheduler = static_cast<Vulkan::Scheduler*>(opaque_scheduler);
     {
         std::lock_guard lock{state.async_mutex};
         defer_present = state.async_present && state.surface && !state.async_stop;
     }
-    present_scheduler = scheduler;
+    present_scheduler = opaque_scheduler;
     if (!defer_present && !state.device_failed &&
-        !scheduler->WaitDispatchedWorkFor(std::chrono::seconds(2))) {
+        !azahar_ios_vk_wait_dispatched(present_scheduler, 2000)) {
         state.device_failed = true;
     }
 }
@@ -839,7 +835,7 @@ extern "C" int azahar_ios_vk_readback_frame(unsigned width, unsigned height, con
 #if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
     // A fallback must retain the old producer-before-copy ordering.
     if (present_scheduler && defer_present &&
-        !present_scheduler->WaitDispatchedWorkFor(std::chrono::seconds(2))) {
+        !azahar_ios_vk_wait_dispatched(present_scheduler, 2000)) {
         state.device_failed = true;
         RequestAsyncStop();
         return -1;
@@ -1090,9 +1086,15 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
         if (present_scheduler && defer_present) {
             // Record only a host callback. Earlier Flush work is ahead of this
             // chunk and future rendering is behind it, even when CPU runs ahead.
-            present_scheduler->Record(
-                [slot, next, ready](vk::CommandBuffer) { SubmitAsyncBlit(slot, next, ready); });
-            present_scheduler->DispatchWork();
+            azahar_ios_vk_schedule_present(
+                present_scheduler,
+                [](void* current, void* following, unsigned image_index) {
+                    // SubmitQueued pins the swapchain until this callback publishes its result.
+                    SubmitAsyncBlit(static_cast<Context::PresentSlot*>(current),
+                                    static_cast<Context::PresentSlot*>(following),
+                                    state.present_ready[image_index]);
+                },
+                slot, next, index);
             return 1;
         }
 #endif

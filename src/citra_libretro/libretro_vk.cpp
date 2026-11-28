@@ -24,6 +24,21 @@
 
 #include <vk_mem_alloc.h>
 
+#if defined(IOS) && defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+extern "C" bool azahar_ios_vk_wait_dispatched(void* scheduler, unsigned timeout_ms) {
+    return static_cast<Vulkan::Scheduler*>(scheduler)->WaitDispatchedWorkFor(
+        std::chrono::milliseconds(timeout_ms));
+}
+
+extern "C" void azahar_ios_vk_schedule_present(void* scheduler,
+                                               void (*callback)(void*, void*, unsigned), void* slot,
+                                               void* next, unsigned index) {
+    auto* worker = static_cast<Vulkan::Scheduler*>(scheduler);
+    worker->Record([callback, slot, next, index](vk::CommandBuffer) { callback(slot, next, index); });
+    worker->DispatchWork();
+}
+#endif
+
 static const struct retro_hw_render_interface_vulkan* vulkan_intf;
 static VkDevice negotiated_device = VK_NULL_HANDLE;
 static std::vector<std::string> negotiated_extensions;

@@ -21,6 +21,10 @@ void azahar_ios_vk_wait_graphics_idle();
 // Core-internal scoped access to the scheduler during the video callback.
 void azahar_ios_vk_begin_present(void* scheduler);
 void azahar_ios_vk_end_present();
+// Keep the raw Vulkan bridge separate from Vulkan-Hpp configuration macros.
+bool azahar_ios_vk_wait_dispatched(void* scheduler, unsigned timeout_ms);
+void azahar_ios_vk_schedule_present(void* scheduler, void (*callback)(void*, void*, unsigned),
+                                    void* slot, void* next, unsigned index);
 __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
     unsigned width, unsigned height, unsigned drawable_width, unsigned drawable_height,
     const float* rectangles, unsigned count);
