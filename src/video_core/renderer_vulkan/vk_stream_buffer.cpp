@@ -111,13 +111,16 @@ StreamBuffer::~StreamBuffer() {
     device.freeMemory(memory);
 }
 
-std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment) {
+std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment, u32 wrap_size) {
     if (!is_coherent && type == BufferType::Stream) {
         size = Common::AlignUp(size, instance.NonCoherentAtomSize());
+        if (wrap_size) {
+            wrap_size = Common::AlignUp(wrap_size, instance.NonCoherentAtomSize());
+            alignment = std::max<u64>(alignment, instance.NonCoherentAtomSize());
+        }
     }
 
-    ASSERT(size <= stream_buffer_size);
-    mapped_size = size;
+    ASSERT(size <= stream_buffer_size && wrap_size <= stream_buffer_size);
 
     if (alignment > 0) {
         offset = Common::AlignUp(offset, alignment);
@@ -127,6 +130,9 @@ std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment) {
     if (offset + size > stream_buffer_size) {
         // The buffer would overflow, save the amount of used watches and reset the state.
         invalidate = true;
+        if (wrap_size) {
+            size = wrap_size;
+        }
         invalidation_mark = current_watch_cursor;
         current_watch_cursor = 0;
         offset = 0;
@@ -137,6 +143,7 @@ std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment) {
         wait_bound = 0;
     }
 
+    mapped_size = size;
     const u64 mapped_upper_bound = offset + size;
     WaitPendingOperations(mapped_upper_bound);
 
@@ -172,6 +179,11 @@ void StreamBuffer::Commit(u32 size) {
     auto& watch = current_watches[current_watch_cursor++];
     watch.upper_bound = offset;
     watch.tick = scheduler.CurrentTick();
+}
+
+void StreamBuffer::MarkWatchUsed(std::size_t index, u64 tick) {
+    ASSERT(index < current_watch_cursor);
+    current_watches[index].tick = std::max(current_watches[index].tick, tick);
 }
 
 void StreamBuffer::CreateBuffers(u64 preferred_size) {

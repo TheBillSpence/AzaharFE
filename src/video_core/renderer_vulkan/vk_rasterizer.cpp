@@ -647,6 +647,17 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         });
     }
 
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    // A draw may reuse bindings uploaded on an earlier tick. Mark the latest
+    // use after recording the draw, including any intervening stream flush.
+    const u64 uniform_tick = scheduler.CurrentTick();
+    if (succeeded && uniforms_initialized && uniform_last_use_tick != uniform_tick) {
+        for (const auto watch : uniform_watches) {
+            uniform_buffer.MarkWatchUsed(watch, uniform_tick);
+        }
+        uniform_last_use_tick = uniform_tick;
+    }
+#endif
     vertex_batch.clear();
     return succeeded;
 }
@@ -1034,6 +1045,61 @@ void RasterizerVulkan::SyncAndUploadLUTs() {
 
 void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     const bool sync_vs_pica = accelerate_draw && pica.vs_setup.uniforms_dirty;
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    const bool init = !uniforms_initialized;
+    const bool write_vs = vs_data_dirty || init;
+    const bool write_fs = fs_data_dirty || init;
+    const bool write_pica = sync_vs_pica || init;
+    if (!write_vs && !write_fs && !write_pica) {
+        return;
+    }
+    const u32 full_size =
+        uniform_size_aligned_vs_pica + uniform_size_aligned_vs + uniform_size_aligned_fs;
+    const u32 dirty_size = (write_vs ? uniform_size_aligned_vs : 0) +
+                           (write_fs ? uniform_size_aligned_fs : 0) +
+                           (write_pica ? uniform_size_aligned_vs_pica : 0);
+    auto [uniforms, offset, invalidate] =
+        uniform_buffer.Map(dirty_size, uniform_buffer_alignment, full_size);
+    u32 used_bytes = 0;
+    const bool update_vs = write_vs || invalidate;
+    const bool update_fs = write_fs || invalidate;
+    const bool update_pica = write_pica || invalidate;
+    if (update_vs) {
+        std::memcpy(uniforms + used_bytes, &vs_data, sizeof(vs_data));
+        pipeline_cache.UpdateRange(1, offset + used_bytes);
+        vs_data_dirty = false;
+        used_bytes += uniform_size_aligned_vs;
+    }
+    if (update_fs) {
+        std::memcpy(uniforms + used_bytes, &fs_data, sizeof(fs_data));
+        pipeline_cache.UpdateRange(2, offset + used_bytes);
+        fs_data_dirty = false;
+        used_bytes += uniform_size_aligned_fs;
+    }
+    if (update_pica) {
+        VSPicaUniformData vs_uniforms;
+        vs_uniforms.SetFromRegs(pica.vs_setup);
+        std::memcpy(uniforms + used_bytes, &vs_uniforms, sizeof(vs_uniforms));
+        pipeline_cache.UpdateRange(0, offset + used_bytes);
+        pica.vs_setup.uniforms_dirty = false;
+        used_bytes += uniform_size_aligned_vs_pica;
+    }
+    uniform_buffer.Commit(used_bytes);
+    const auto watch = uniform_buffer.LastCommitWatch();
+    if (update_pica) {
+        uniform_watches[0] = watch;
+    }
+    if (update_vs) {
+        uniform_watches[1] = watch;
+    }
+    if (update_fs) {
+        uniform_watches[2] = watch;
+    }
+    uniforms_initialized = true;
+    // New uploads already have the current tick; after recording the draw,
+    // refresh all live bindings even if the vertex upload forced a flush.
+    uniform_last_use_tick = 0;
+#else
     if (!sync_vs_pica && !vs_data_dirty && !fs_data_dirty) {
         return;
     }
@@ -1069,6 +1135,7 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     }
 
     uniform_buffer.Commit(used_bytes);
+#endif
 }
 
 bool RasterizerVulkan::DiskResourcesLoadCrashed(u64 title_id) {

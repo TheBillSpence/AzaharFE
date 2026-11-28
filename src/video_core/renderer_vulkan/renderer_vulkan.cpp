@@ -261,9 +261,11 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
         clear_color.float32[3] = 1.0f;
 
         DrawScreens(frame, layout, flipped);
+#if !defined(IOS) || !defined(HAVE_LIBRETRO)
         scheduler.Flush(frame->render_ready);
-        // The iOS LibRetro presenter orders its own GPU work behind this
-        // flush; compatibility/readback modes retain the worker wait there.
+#endif
+        // iOS LibRetro owns the flush so the ready presentation blit can be
+        // submitted with the render. Compatibility modes still flush first.
         window.Present(frame);
         if ((secondaryWindowEnabled && isSecondaryWindow) || (!secondaryWindowEnabled)) {
             Core::PerfStats::game_frames_updated = false;

@@ -35,6 +35,7 @@ std::atomic<bool> presentation_suspended{false};
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
 thread_local void* present_scheduler = nullptr;
 thread_local bool defer_present = false;
+thread_local bool defer_render_flush = false;
 #endif
 struct PresentStageScope {
     ~PresentStageScope() {
@@ -489,9 +490,23 @@ Context::PresentSlot* FindPresentSlot(bool& failed) {
     return slot;
 }
 
-// Submit on the existing graphics worker after the renderer submission, before
-// any later command chunk can reuse the source image. No frontend objects or
-// mutable source metadata are accessed here; the recorded blit owns the handles.
+// Publish only after the queue has accepted the whole submission. SubmitQueued
+// pins the slot and the swapchain until this callback runs.
+void CompleteAsyncBlit(Context::PresentSlot* slot, Context::PresentSlot* next, bool success) {
+    async_submit_stage.store(0, std::memory_order_relaxed);
+    std::lock_guard lock{state.async_mutex};
+    if (success) {
+        slot->pending = true;
+        slot->acquisition_pending = false;
+        state.async_next = state.async_stop ? nullptr : next;
+        state.async_phase = AsyncPhase::PresentRequested;
+    } else {
+        state.async_phase = AsyncPhase::Failed;
+    }
+    state.async_cv.notify_one();
+}
+
+// Fallback: submit on the graphics worker after the renderer submission.
 void SubmitAsyncBlit(Context::PresentSlot* slot, Context::PresentSlot* next, VkSemaphore ready) {
     const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -509,17 +524,7 @@ void SubmitAsyncBlit(Context::PresentSlot* slot, Context::PresentSlot* next, VkS
         async_submit_stage.store(7, std::memory_order_relaxed);
         result = vkQueueSubmit(state.queue, 1, &submit, slot->fence);
     }
-    async_submit_stage.store(0, std::memory_order_relaxed);
-    std::lock_guard lock{state.async_mutex};
-    if (result == VK_SUCCESS) {
-        slot->pending = true;
-        slot->acquisition_pending = false;
-        state.async_next = state.async_stop ? nullptr : next;
-        state.async_phase = AsyncPhase::PresentRequested;
-    } else {
-        state.async_phase = AsyncPhase::Failed;
-    }
-    state.async_cv.notify_one();
+    CompleteAsyncBlit(slot, next, result == VK_SUCCESS);
 }
 
 void DestroySwapchain() {
@@ -829,6 +834,10 @@ extern "C" void azahar_ios_vk_begin_present(void* opaque_scheduler) {
         defer_present = state.async_present && state.surface && !state.async_stop;
     }
     present_scheduler = opaque_scheduler;
+    defer_render_flush = defer_present && azahar_ios_vk_can_combine(present_scheduler);
+    if (!defer_render_flush) {
+        azahar_ios_vk_flush_render(present_scheduler);
+    }
     if (!defer_present && !state.device_failed &&
         !azahar_ios_vk_wait_dispatched(present_scheduler, 2000)) {
         state.device_failed = true;
@@ -836,7 +845,12 @@ extern "C" void azahar_ios_vk_begin_present(void* opaque_scheduler) {
 }
 
 extern "C" void azahar_ios_vk_end_present() {
+    // Busy, paused, skipped, and error callbacks still submit the guest render.
+    if (present_scheduler && defer_render_flush) {
+        azahar_ios_vk_flush_render(present_scheduler);
+    }
     present_scheduler = nullptr;
+    defer_render_flush = false;
     defer_present = false;
 }
 #endif
@@ -851,6 +865,10 @@ extern "C" int azahar_ios_vk_readback_frame(unsigned width, unsigned height, con
     *pixels = nullptr;
 #if defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
     // A fallback must retain the old producer-before-copy ordering.
+    if (present_scheduler && defer_render_flush) {
+        defer_render_flush = false;
+        azahar_ios_vk_flush_render(present_scheduler);
+    }
     if (present_scheduler && defer_present &&
         !azahar_ios_vk_wait_dispatched(present_scheduler, 2000)) {
         state.device_failed = true;
@@ -1102,6 +1120,20 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
             state.async_phase = AsyncPhase::SubmitQueued;
         }
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+        if (present_scheduler && defer_render_flush) {
+            // One driver call, two ordered submit batches: render followed by
+            // the acquired drawable blit. The slot fence covers both batches.
+            defer_render_flush = false;
+            async_submit_stage.store(7, std::memory_order_relaxed);
+            azahar_ios_vk_schedule_combined(
+                present_scheduler, slot->command, slot->acquired, ready, slot->fence,
+                [](void* current, void* following, bool success) {
+                    CompleteAsyncBlit(static_cast<Context::PresentSlot*>(current),
+                                      static_cast<Context::PresentSlot*>(following), success);
+                },
+                slot, next);
+            return 1;
+        }
         if (present_scheduler && defer_present) {
             // Record only a host callback. Earlier Flush work is ahead of this
             // chunk and future rendering is behind it, even when CPU runs ahead.

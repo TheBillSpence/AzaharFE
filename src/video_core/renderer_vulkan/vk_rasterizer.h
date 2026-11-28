@@ -142,6 +142,12 @@ private:
     u32 uniform_size_aligned_vs_pica;
     u32 uniform_size_aligned_vs;
     u32 uniform_size_aligned_fs;
+#if defined(IOS) && defined(HAVE_LIBRETRO)
+    // Indices into the current uniform ring generation, one per binding.
+    std::array<std::size_t, 3> uniform_watches{};
+    bool uniforms_initialized = false;
+    u64 uniform_last_use_tick = 0;
+#endif
     bool async_shaders{false};
 };
 

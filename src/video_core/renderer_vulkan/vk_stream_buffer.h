@@ -35,7 +35,16 @@ public:
      * @param size Size to reserve.
      * @returns A pair of a raw memory pointer (with offset added), and the buffer offset
      */
-    std::tuple<u8*, u32, bool> Map(u32 size, u64 alignment);
+    // If wrap_size is nonzero, reserve only size normally and reserve wrap_size
+    // after a wrap, when all cached uniform bindings must be replaced.
+    std::tuple<u8*, u32, bool> Map(u32 size, u64 alignment, u32 wrap_size = 0);
+
+    // Uniform blocks can be reused by later draws without a new upload. Keep
+    // their allocation watches live through the last recorded use.
+    std::size_t LastCommitWatch() const noexcept {
+        return current_watch_cursor - 1;
+    }
+    void MarkWatchUsed(std::size_t index, u64 tick);
 
     /// Ensures that "size" bytes of memory are available to the GPU, potentially recording a copy.
     void Commit(u32 size);

@@ -45,6 +45,8 @@ public:
 #if defined(IOS) && defined(HAVE_LIBRETRO)
     // Wait only for already-dispatched work; never enqueue or block indefinitely.
     bool WaitDispatchedWorkFor(std::chrono::milliseconds timeout);
+    // Custom ordered submission for an already-recorded iOS presentation blit.
+    void FlushWithSubmit(std::function<void(vk::CommandBuffer, u64)> submit);
 #endif
 
     /// Waits for the given tick to trigger on the GPU.
@@ -194,7 +196,8 @@ private:
 
     void AllocateWorkerCommandBuffers();
 
-    void SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wait_semaphore);
+    void SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wait_semaphore,
+                         std::function<void(vk::CommandBuffer, u64)> submit = {});
 
     void AcquireNewChunk();
 

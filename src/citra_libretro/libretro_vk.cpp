@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -28,6 +29,33 @@
 extern "C" bool azahar_ios_vk_wait_dispatched(void* scheduler, unsigned timeout_ms) {
     return static_cast<Vulkan::Scheduler*>(scheduler)->WaitDispatchedWorkFor(
         std::chrono::milliseconds(timeout_ms));
+}
+
+extern "C" bool azahar_ios_vk_can_combine(void* scheduler) {
+    auto* worker = static_cast<Vulkan::Scheduler*>(scheduler);
+    return static_cast<Vulkan::MasterSemaphoreLibRetro*>(worker->GetMasterSemaphore())
+        ->HasTimeline();
+}
+
+extern "C" void azahar_ios_vk_flush_render(void* scheduler) {
+    static_cast<Vulkan::Scheduler*>(scheduler)->Flush();
+}
+
+extern "C" void azahar_ios_vk_schedule_combined(void* scheduler, void* blit, void* acquired,
+                                                void* ready, void* fence,
+                                                void (*complete)(void*, void*, bool), void* slot,
+                                                void* next) {
+    auto* worker = static_cast<Vulkan::Scheduler*>(scheduler);
+    auto* master = static_cast<Vulkan::MasterSemaphoreLibRetro*>(worker->GetMasterSemaphore());
+    worker->FlushWithSubmit([=](vk::CommandBuffer render, u64 tick) {
+        const bool success = master->SubmitCombined(
+            render, static_cast<VkCommandBuffer>(blit), static_cast<VkSemaphore>(acquired),
+            static_cast<VkSemaphore>(ready), static_cast<VkFence>(fence), tick);
+        complete(slot, next, success);
+        if (!success) {
+            UNREACHABLE_MSG("Combined iOS Vulkan submission failed");
+        }
+    });
 }
 
 extern "C" void azahar_ios_vk_schedule_present(void* scheduler,
@@ -126,6 +154,12 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
                                                   VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     const bool has_custom_border_color = AddExtensionIfAvailable(
         enabled_exts, available_exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+#if defined(IOS) && defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+    const bool has_timeline = AddExtensionIfAvailable(enabled_exts, available_exts,
+                                                     VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+#else
+    const bool has_timeline = false;
+#endif
 
     auto get_features = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
         get_instance_proc_addr(instance, "vkGetPhysicalDeviceFeatures2"));
@@ -141,6 +175,12 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
     if (has_custom_border_color) {
         border.pNext = enabled_features.pNext;
         enabled_features.pNext = &border;
+    }
+    VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timeline_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR};
+    if (has_timeline) {
+        timeline_features.pNext = enabled_features.pNext;
+        enabled_features.pNext = &timeline_features;
     }
     get_features(gpu, &enabled_features);
     if (required_features) {
@@ -215,6 +255,19 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
         device = VK_NULL_HANDLE;
         result = vkCreateDevice(gpu, &device_info, nullptr, &device);
     }
+    if (result != VK_SUCCESS && has_timeline) {
+        // Some MoltenVK versions advertise timeline support but reject creation.
+        // Retry with the original feature chain and fence-based tracking.
+        enabled_features.pNext = timeline_features.pNext;
+        timeline_features.timelineSemaphore = VK_FALSE;
+        std::erase_if(enabled_exts, [](const char* extension) {
+            return !strcmp(extension, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+        });
+        device_info.enabledExtensionCount = static_cast<uint32_t>(enabled_exts.size());
+        device_info.ppEnabledExtensionNames = enabled_exts.data();
+        device = VK_NULL_HANDLE;
+        result = vkCreateDevice(gpu, &device_info, nullptr, &device);
+    }
     if (result != VK_SUCCESS) {
         LOG_CRITICAL(Render_Vulkan, "vkCreateDevice failed: {}", static_cast<int>(result));
         return false;
@@ -229,6 +282,8 @@ bool CreateVulkanDevice(struct retro_vulkan_context* context, VkInstance instanc
             !strcmp(name, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) ||
             !strcmp(name, VK_EXT_TOOLING_INFO_EXTENSION_NAME) ||
             !strcmp(name, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) ||
+            (!strcmp(name, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) &&
+             timeline_features.timelineSemaphore) ||
             (!strcmp(name, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) &&
              border.customBorderColors && border.customBorderColorWithoutFormat)) {
             negotiated_extensions.emplace_back(name);
@@ -365,7 +420,8 @@ LibRetroVKInstance::LibRetroVKInstance(Frontend::EmuWindow& window,
     }
 
     if (timeline_semaphores) {
-        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkGetSemaphoreCounterValueKHR) {
+        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkGetSemaphoreCounterValueKHR ||
+            !VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitSemaphoresKHR) {
             LOG_WARNING(Render_Vulkan, "Timeline semaphore function pointers not available in "
                                        "LibRetro context, disabling");
             timeline_semaphores = false;
@@ -749,6 +805,9 @@ void PresentWindow::Present(Frame* frame) {
     }
 
     if (!vulkan_intf) {
+#if defined(IOS)
+        scheduler.Flush(frame->render_ready);
+#endif
         LOG_ERROR(Render_Vulkan, "LibRetro Vulkan interface not available for presentation");
         return;
     }
@@ -761,6 +820,7 @@ void PresentWindow::Present(Frame* frame) {
         }
     } end_present;
 #elif defined(IOS)
+    scheduler.Flush(frame->render_ready);
     scheduler.WaitWorker();
 #endif
 
@@ -817,6 +877,27 @@ constexpr u64 FENCE_RESERVE = 8;
 
 MasterSemaphoreLibRetro::MasterSemaphoreLibRetro(const Instance& instance_) : instance{instance_} {
     const vk::Device device{instance.GetDevice()};
+    // Only enable the timeline on the device we negotiated ourselves, not an
+    // arbitrary external RetroArch frontend's device with unknown enabled features.
+#if defined(IOS) && defined(__APPLE__) && defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
+    if (negotiated_device == static_cast<VkDevice>(device) &&
+        instance.IsTimelineSemaphoreSupported()) {
+        try {
+            const vk::StructureChain chain = {
+                vk::SemaphoreCreateInfo{},
+                vk::SemaphoreTypeCreateInfoKHR{
+                    .semaphoreType = vk::SemaphoreType::eTimeline,
+                    .initialValue = 0,
+                },
+            };
+            timeline = device.createSemaphoreUnique(chain.get());
+            LOG_INFO(Render_Vulkan, "iOS GPU timeline enabled; combined submission available");
+            return;
+        } catch (const vk::SystemError& err) {
+            LOG_WARNING(Render_Vulkan, "Timeline creation failed; using fences: {}", err.what());
+        }
+    }
+#endif
     // Pre-allocate fence pool
     for (u64 i = 0; i < FENCE_RESERVE; i++) {
         free_queue.push_back(device.createFence({}));
@@ -826,6 +907,9 @@ MasterSemaphoreLibRetro::MasterSemaphoreLibRetro(const Instance& instance_) : in
 }
 
 MasterSemaphoreLibRetro::~MasterSemaphoreLibRetro() {
+    if (timeline) {
+        return;
+    }
     wait_thread.request_stop();
     wait_cv.notify_all();
     wait_thread.join();
@@ -835,17 +919,113 @@ MasterSemaphoreLibRetro::~MasterSemaphoreLibRetro() {
     }
 }
 
-void MasterSemaphoreLibRetro::Refresh() {}
+void MasterSemaphoreLibRetro::Refresh() {
+    if (!timeline) {
+        return;
+    }
+    const u64 counter = instance.GetDevice().getSemaphoreCounterValueKHR(*timeline);
+    u64 known = gpu_tick.load(std::memory_order_relaxed);
+    while (counter > known && !gpu_tick.compare_exchange_weak(known, counter,
+                                                               std::memory_order_release,
+                                                               std::memory_order_relaxed)) {
+    }
+}
 
 void MasterSemaphoreLibRetro::Wait(u64 tick) {
+    if (timeline) {
+        if (IsFree(tick)) {
+            return;
+        }
+        Refresh();
+        if (IsFree(tick)) {
+            return;
+        }
+        const vk::SemaphoreWaitInfoKHR wait_info = {
+            .semaphoreCount = 1,
+            .pSemaphores = &timeline.get(),
+            .pValues = &tick,
+        };
+        const auto result = instance.GetDevice().waitSemaphoresKHR(
+            &wait_info, std::numeric_limits<u64>::max());
+        if (result != vk::Result::eSuccess) {
+            UNREACHABLE_MSG("iOS timeline wait failed: {}", vk::to_string(result));
+        }
+        Refresh();
+        return;
+    }
     std::unique_lock lock{free_mutex};
     free_cv.wait(lock, [this, tick] { return gpu_tick.load(std::memory_order_relaxed) >= tick; });
+}
+
+bool MasterSemaphoreLibRetro::SubmitTimeline(vk::CommandBuffer render, vk::CommandBuffer blit,
+                                             vk::Semaphore acquired, vk::Semaphore ready,
+                                             vk::Fence fence, u64 tick) {
+    render.end();
+    const std::array<vk::Semaphore, 2> signals{*timeline, ready};
+    const std::array<u64, 2> values{tick, 0};
+    const u64 binary_value = 0;
+    const vk::PipelineStageFlags transfer = vk::PipelineStageFlagBits::eTransfer;
+    const u32 count = blit ? 2U : 1U;
+    const vk::TimelineSemaphoreSubmitInfoKHR timeline_info = {
+        .waitSemaphoreValueCount = blit ? 1U : 0U,
+        .pWaitSemaphoreValues = blit ? &binary_value : nullptr,
+        .signalSemaphoreValueCount = count,
+        .pSignalSemaphoreValues = values.data(),
+    };
+    std::array<vk::SubmitInfo, 2> submits{};
+    submits[0].commandBufferCount = 1;
+    submits[0].pCommandBuffers = &render;
+    auto& last = submits[count - 1];
+    last.pNext = &timeline_info;
+    last.signalSemaphoreCount = count;
+    last.pSignalSemaphores = signals.data();
+    if (blit) {
+        // Keep the drawable wait on the blit batch, not the preceding render.
+        // Both batches execute in the same queue; the blit's recorded image
+        // barriers preserve output-image ownership and ordering.
+        last.waitSemaphoreCount = 1;
+        last.pWaitSemaphores = &acquired;
+        last.pWaitDstStageMask = &transfer;
+        last.commandBufferCount = 1;
+        last.pCommandBuffers = &blit;
+    }
+    struct QueueLock {
+        QueueLock() {
+            if (vulkan_intf->lock_queue) {
+                vulkan_intf->lock_queue(vulkan_intf->handle);
+            }
+        }
+        ~QueueLock() {
+            if (vulkan_intf->unlock_queue) {
+                vulkan_intf->unlock_queue(vulkan_intf->handle);
+            }
+        }
+    } lock;
+    const vk::Result result = vk::Queue{vulkan_intf->queue}.submit(count, submits.data(), fence);
+    if (result != vk::Result::eSuccess) {
+        LOG_ERROR(Render_Vulkan, "iOS GPU timeline submit failed: {}", vk::to_string(result));
+        return false;
+    }
+    return true;
+}
+
+bool MasterSemaphoreLibRetro::SubmitCombined(vk::CommandBuffer render, vk::CommandBuffer blit,
+                                             vk::Semaphore acquired, vk::Semaphore ready,
+                                             vk::Fence fence, u64 tick) {
+    return timeline && vulkan_intf && SubmitTimeline(render, blit, acquired, ready, fence, tick);
 }
 
 void MasterSemaphoreLibRetro::SubmitWork(vk::CommandBuffer cmdbuf, vk::Semaphore wait,
                                          vk::Semaphore signal, u64 signal_value) {
     if (!vulkan_intf) {
         LOG_ERROR(Render_Vulkan, "LibRetro Vulkan interface not available for command submission");
+        return;
+    }
+
+    if (timeline) {
+        if (!SubmitTimeline(cmdbuf, {}, {}, {}, {}, signal_value)) {
+            UNREACHABLE_MSG("iOS Vulkan timeline submission failed");
+        }
         return;
     }
 

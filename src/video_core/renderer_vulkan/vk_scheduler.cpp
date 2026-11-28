@@ -92,6 +92,10 @@ void Scheduler::WaitWorker() {
 }
 
 #if defined(IOS) && defined(HAVE_LIBRETRO)
+void Scheduler::FlushWithSubmit(std::function<void(vk::CommandBuffer, u64)> submit) {
+    SubmitExecution({}, {}, std::move(submit));
+}
+
 bool Scheduler::WaitDispatchedWorkFor(std::chrono::milliseconds timeout) {
     if (!use_worker_thread) {
         return true;
@@ -200,7 +204,8 @@ void Scheduler::AllocateWorkerCommandBuffers() {
     current_cmdbuf.begin(begin_info);
 }
 
-void Scheduler::SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wait_semaphore) {
+void Scheduler::SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wait_semaphore,
+                                std::function<void(vk::CommandBuffer, u64)> submit) {
     state = StateFlags::AllDirty;
 #if defined(IOS) && defined(HAVE_LIBRETRO)
     // Bound outstanding GPU submissions (not emulated FPS). Normal frames
@@ -216,10 +221,15 @@ void Scheduler::SubmitExecution(vk::Semaphore signal_semaphore, vk::Semaphore wa
 
     on_submit();
 
-    Record([signal_semaphore, wait_semaphore, signal_value, this](vk::CommandBuffer cmdbuf) {
+    Record([signal_semaphore, wait_semaphore, signal_value, this,
+            submit = std::move(submit)](vk::CommandBuffer cmdbuf) {
         MICROPROFILE_SCOPE(Vulkan_Submit);
         std::scoped_lock lock{submit_mutex};
-        master_semaphore->SubmitWork(cmdbuf, wait_semaphore, signal_semaphore, signal_value);
+        if (submit) {
+            submit(cmdbuf, signal_value);
+        } else {
+            master_semaphore->SubmitWork(cmdbuf, wait_semaphore, signal_semaphore, signal_value);
+        }
     });
 
     master_semaphore->Refresh();

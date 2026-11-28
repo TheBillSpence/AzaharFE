@@ -6,9 +6,10 @@ on:
     branches: [SUPER-EXPERIMENTAL-DISPLAY]
 
 # Avoid spending scarce macOS runners compiling superseded iPhone builds.
-# Keep the newest commit running; manual builds on other refs remain separate.
+# Preserve the already queued #8 stability baseline once, then coalesce later builds.
+# Manual builds on other refs remain separate.
 concurrency:
-  group: super-experimental-display-${{ github.ref }}
+  group: super-experimental-display-perf-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

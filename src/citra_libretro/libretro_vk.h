@@ -67,11 +67,20 @@ public:
     void SubmitWork(vk::CommandBuffer cmdbuf, vk::Semaphore wait, vk::Semaphore signal,
                     u64 signal_value) override;
 
+    bool HasTimeline() const noexcept {
+        return static_cast<bool>(timeline);
+    }
+    bool SubmitCombined(vk::CommandBuffer render, vk::CommandBuffer blit, vk::Semaphore acquired,
+                        vk::Semaphore ready, vk::Fence fence, u64 tick);
+
 private:
+    bool SubmitTimeline(vk::CommandBuffer render, vk::CommandBuffer blit, vk::Semaphore acquired,
+                        vk::Semaphore ready, vk::Fence fence, u64 tick);
     void WaitThread(std::stop_token token);
     vk::Fence GetFreeFence();
 
     const Instance& instance;
+    vk::UniqueSemaphore timeline;
     std::deque<vk::Fence> free_queue;
     std::queue<Waitable> wait_queue;
     std::mutex free_mutex;

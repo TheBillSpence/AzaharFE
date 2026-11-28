@@ -16,7 +16,8 @@ __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface()
 __attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* layer);
 __attribute__((visibility("default"))) void azahar_ios_vk_set_async_present(bool enabled);
 // Lifecycle-only atomic flag; do not acquire new drawables while suspended.
-__attribute__((visibility("default"))) void azahar_ios_vk_set_presentation_suspended(bool suspended);
+__attribute__((visibility("default"))) void azahar_ios_vk_set_presentation_suspended(
+    bool suspended);
 __attribute__((visibility("default"))) bool azahar_ios_vk_separate_present_queue();
 // Core-only synchronization before destroying the reusable output image.
 void azahar_ios_vk_wait_graphics_idle();
@@ -25,6 +26,12 @@ void azahar_ios_vk_begin_present(void* scheduler);
 void azahar_ios_vk_end_present();
 // Keep the raw Vulkan bridge separate from Vulkan-Hpp configuration macros.
 bool azahar_ios_vk_wait_dispatched(void* scheduler, unsigned timeout_ms);
+bool azahar_ios_vk_can_combine(void* scheduler);
+void azahar_ios_vk_flush_render(void* scheduler);
+// Opaque Vulkan handles are pointers on the 64-bit Apple bridge target.
+void azahar_ios_vk_schedule_combined(void* scheduler, void* blit, void* acquired, void* ready,
+                                     void* fence, void (*complete)(void*, void*, bool), void* slot,
+                                     void* next);
 void azahar_ios_vk_schedule_present(void* scheduler, void (*callback)(void*, void*, unsigned),
                                     void* slot, void* next, unsigned index);
 __attribute__((visibility("default"))) int azahar_ios_vk_present_frame(
