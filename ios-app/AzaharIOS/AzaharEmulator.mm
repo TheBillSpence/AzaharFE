@@ -107,6 +107,10 @@ static std::atomic<bool> sJITProbeFailed{false};
     void *_libraryHandle;
     std::mutex _jitBridgeMutex;
     AZAudioOutput *_audioOutput;
+    dispatch_queue_t _audioControlQueue;
+    std::atomic<bool> _audioInterrupted;
+    std::atomic<bool> _audioSessionRunning;
+    uint64_t _appliedAudioRoute;
     void (*_requestJITHalt)(void);
     std::atomic<bool> _stopping;
     std::atomic<bool> _paused;
@@ -126,6 +130,7 @@ static std::atomic<bool> sJITProbeFailed{false};
     std::atomic<uint64_t> _returnedFrames;
     std::atomic<uint64_t> _videoCallbacks;
     decltype(&azahar_ios_vk_present_stage) _vkPresentStage;
+    decltype(&azahar_ios_vk_set_presentation_suspended) _vkSuspendPresentation;
     NSObject *_playSession;
     BOOL _receivedFirstVideo;
     std::atomic<uint64_t> _deliveredImages;
@@ -195,6 +200,7 @@ static std::atomic<bool> sJITProbeFailed{false};
 - (BOOL)startVulkanRenderer;
 - (void)runLoadedGame;
 - (void)replaceAudioWithSampleRate:(double)rate;
+- (void)updateAudioForSampleRate:(double)rate epoch:(uint64_t)epoch retries:(unsigned)retries;
 - (void)reportJITStage:(NSString *)message;
 - (BOOL)shouldStopAfterSlices:(uint64_t)slices;
 - (void)requestJITHalt;
@@ -322,11 +328,16 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
     _requestJITHalt = nullptr;
     _vkPresentStage = nullptr;
+    _vkSuspendPresentation = nullptr;
     _gameplayMonitoring.store(false);
     _gameplayPhase.store(0);
     _returnedFrames.store(0);
     _videoCallbacks.store(0);
     _audioRouteEpoch.store(0);
+    _audioControlQueue = dispatch_queue_create("org.azahar.audio-control", DISPATCH_QUEUE_SERIAL);
+    _audioInterrupted.store(false);
+    _audioSessionRunning.store(false);
+    _appliedAudioRoute = UINT64_MAX;
     _pauseAcknowledged.store(false);
     _vkRenderCallback = {};
     _vkNegotiation = nullptr;
@@ -413,6 +424,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         _stopping.store(false);
         _paused.store(false);
         _audioEpoch.store(0);
+        _audioInterrupted.store(false);
         _frameQueued.store(false);
         _input.Enable(false);
         _guestRan.store(false);
@@ -471,12 +483,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             });
         }
         [self writeDiagnostic:@"LIFECYCLE worker exiting; releasing audio and core library"];
-        [self replaceAudioWithSampleRate:0];
+        dispatch_sync(_audioControlQueue, ^{ [self replaceAudioWithSampleRate:0]; });
         {
             // No stop callback may outlive the dynamic library containing it.
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _requestJITHalt = nullptr;
             _vkPresentStage = nullptr;
+            _vkSuspendPresentation = nullptr;
             if (_libraryHandle) {
                 [self writeDiagnostic:@"LIFECYCLE closing core library"];
                 dlclose(_libraryHandle);
@@ -606,6 +619,9 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             std::lock_guard<std::mutex> lock(_jitBridgeMutex);
             _vkPresentStage = reinterpret_cast<decltype(_vkPresentStage)>(
                 dlsym(_libraryHandle, "azahar_ios_vk_present_stage"));
+            _vkSuspendPresentation = reinterpret_cast<decltype(_vkSuspendPresentation)>(
+                dlsym(_libraryHandle, "azahar_ios_vk_set_presentation_suspended"));
+            if (_vkSuspendPresentation) _vkSuspendPresentation(_paused.load());
             _requestJITHalt = reinterpret_cast<void (*)(void)>(
                 dlsym(_libraryHandle, "azahar_jit_request_halt"));
             if (!_requestJITHalt) {
@@ -630,7 +646,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
                 [self reportJITStage:@"6/7 Game loaded; starting first frame"];
                 [self runLoadedGame];
                 [self writeDiagnostic:@"LIFECYCLE stopping audio"];
-                [self replaceAudioWithSampleRate:0];
+                dispatch_sync(_audioControlQueue, ^{ [self replaceAudioWithSampleRate:0]; });
                 if (_vkRequested && _vkDrainReadback && !_vkDrainReadback()) {
                     [self reportJITStage:@"Vulkan worker or GPU copy is still pending. Restart is blocked until safe teardown; if it remains stuck, export diagnostics and reopen the app."];
                     // Never unload the core or free a source image while the
@@ -692,7 +708,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 }
 
 - (void)receiveAudio:(const int16_t *)data frames:(size_t)frames {
-    if (_stopping.load() || _paused.load()) return;
+    if (_stopping.load() || _paused.load() || _audioInterrupted.load()) return;
     AZAudioOutput *output;
     @synchronized (self) { output = _audioOutput; }
     [output appendSamples:data frames:frames];
@@ -701,7 +717,14 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 - (void)setPaused:(BOOL)paused {
     if (_stopping.load()) return;
     if (_paused.exchange(paused != NO) != (paused != NO)) {
+        {
+            // Do not block UIKit on an in-flight JIT halt or core unload.
+            std::unique_lock<std::mutex> lock(_jitBridgeMutex, std::try_to_lock);
+            if (lock.owns_lock() && _vkSuspendPresentation)
+                _vkSuspendPresentation(paused != NO);
+        }
         _audioEpoch.fetch_add(1);
+        [self recordFrontendEvent:paused ? @"LIFECYCLE pause requested" : @"LIFECYCLE resume requested"];
         if (paused) {
             _input.Enable(false);
             // The core checks the frame-stop callback at scheduler boundaries.
@@ -715,18 +738,50 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _audioEpoch.fetch_add(1);
 }
 
-// Only the emulation worker manages the audio session and queue.
+- (void)setAudioInterrupted:(BOOL)interrupted {
+    if (_audioInterrupted.exchange(interrupted != NO) != (interrupted != NO)) {
+        [self refreshAudioRoute];
+    }
+}
+
+// AudioQueue/AVAudioSession calls can block across interruptions. Serialize them
+// on a dedicated control queue rather than holding up retro_run or the UI.
 - (void)replaceAudioWithSampleRate:(double)rate {
     AZAudioOutput *old;
     @synchronized (self) { old = _audioOutput; _audioOutput = nil; }
     [old stop];
-    if (rate <= 0 || _stopping.load() || _paused.load()) return;
+    if (rate <= 0 || _stopping.load() || _paused.load() || _audioInterrupted.load()) return;
     AZAudioOutput *output = [AZAudioOutput new];
     if ([output startWithSampleRate:rate]) {
         @synchronized (self) { _audioOutput = output; }
         [self writeDiagnostic:[NSString stringWithFormat:@"Audio: stereo PCM at %.0f Hz", rate]];
     } else {
         [self writeDiagnostic:@"Audio output unavailable; continuing without sound"];
+    }
+}
+
+- (void)updateAudioForSampleRate:(double)rate epoch:(uint64_t)epoch retries:(unsigned)retries {
+    if (!_audioSessionRunning.load() || _stopping.load() || epoch != _audioEpoch.load()) return;
+    AZAudioOutput *output;
+    @synchronized (self) { output = _audioOutput; }
+    if (_paused.load() || _audioInterrupted.load()) {
+        [output setMuted:YES];
+        return;
+    }
+    const auto route = _audioRouteEpoch.load();
+    if (output && _appliedAudioRoute == route) {
+        [output setMuted:NO];
+        return;
+    }
+    [self replaceAudioWithSampleRate:rate];
+    @synchronized (self) { output = _audioOutput; }
+    if (output) {
+        _appliedAudioRoute = route;
+    } else if (retries && _audioSessionRunning.load() && !_stopping.load()) {
+        __weak AzaharEmulator *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), _audioControlQueue, ^{
+            [weakSelf updateAudioForSampleRate:rate epoch:epoch retries:retries-1];
+        });
     }
 }
 
@@ -743,6 +798,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
             (wantsAsync || [presentation isEqual:@"metal_sync"]);
         if (_vkSetAsyncPresent) _vkSetAsyncPresent(asynchronous);
         if (_metalActive) _vkSetMetalLayer((__bridge void *)self.metalLayer);
+        if (_vkSuspendPresentation) _vkSuspendPresentation(_paused.load());
         if (!_vkStart(_vkNegotiation)) return NO;
         _vkInterface = const_cast<void *>(_vkGetInterface());
         if (!_vkInterface) return NO;
@@ -815,7 +871,6 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     const double fpsTarget = std::isfinite(av.timing.fps) && av.timing.fps >= 1 && av.timing.fps <= 240 ? av.timing.fps : 60.0;
     const auto framePeriod = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / fpsTarget));
     uint64_t audioEpoch = UINT64_MAX;
-    uint64_t routeEpoch = UINT64_MAX;
     auto nextFrame = std::chrono::steady_clock::now();
     auto fpsWindow = nextFrame;
     unsigned frameCount = 0;
@@ -832,6 +887,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
     _videoCallbacks.store(0);
     _gameplayPhase.store(0);
     _gameplayMonitoring.store(true);
+    _audioEpoch.fetch_add(1);
+    _audioSessionRunning.store(true);
     [self scheduleGameplayCheck:_playSession frames:0 videos:0 misses:0];
     if (_jitEnabled) {
         _waitingForFirstFrame.store(true);
@@ -841,17 +898,13 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         const auto epoch = _audioEpoch.load();
         if (audioEpoch != epoch) {
             audioEpoch = epoch;
-            const auto route = _audioRouteEpoch.load();
-            AZAudioOutput *output;
-            @synchronized (self) { output = _audioOutput; }
-            if (_paused.load()) {
-                [output setMuted:YES];
-            } else if (!output || routeEpoch != route) {
-                [self replaceAudioWithSampleRate:av.timing.sample_rate];
-                routeEpoch = route;
-            } else {
-                [output setMuted:NO];
-            }
+            // Worker-side catch-up if the main-thread lifecycle call could not
+            // acquire the dylib lifetime mutex. Only this worker unloads it.
+            if (_vkSuspendPresentation) _vkSuspendPresentation(_paused.load());
+            const double rate = av.timing.sample_rate;
+            dispatch_async(_audioControlQueue, ^{
+                [self updateAudioForSampleRate:rate epoch:epoch retries:3];
+            });
             nextFrame = fpsWindow = performanceWindow = std::chrono::steady_clock::now();
             frameCount = emulatedFrames = 0;
             coreRunMilliseconds = 0;
@@ -939,6 +992,8 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
         if (nextFrame < now) nextFrame = now;
         std::this_thread::sleep_until(nextFrame);
     }
+    _audioSessionRunning.store(false);
+    _audioEpoch.fetch_add(1);
     _gameplayMonitoring.store(false);
     _gameplayPhase.store(0);
     _waitingForFirstFrame.store(false);
@@ -1065,7 +1120,7 @@ static void AzaharLog(enum retro_log_level level, const char *format, ...) {
 
 - (void)setInputEnabled:(BOOL)enabled { _input.Enable(enabled); }
 - (void)setPointerX:(int16_t)x y:(int16_t)y pressed:(BOOL)down { _input.Touch({x, y, down != NO}); }
-- (void)setCircleX:(int16_t)x y:(int16_t)y { _input.Circle(x, y); }
+- (void)setCircleX:(int16_t)x y:(int16_t)y pressed:(BOOL)held { _input.Circle(x, y, held != NO); }
 
 - (void)acceptMetalPresentations:(unsigned)total {
     const unsigned accepted = total - _metalObserved;

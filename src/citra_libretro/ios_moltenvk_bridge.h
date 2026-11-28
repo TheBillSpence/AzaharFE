@@ -15,6 +15,8 @@ __attribute__((visibility("default"))) const void* azahar_ios_vk_get_interface()
 // The accepted count below advances only after successful queue presentation.
 __attribute__((visibility("default"))) void azahar_ios_vk_set_metal_layer(void* layer);
 __attribute__((visibility("default"))) void azahar_ios_vk_set_async_present(bool enabled);
+// Lifecycle-only atomic flag; do not acquire new drawables while suspended.
+__attribute__((visibility("default"))) void azahar_ios_vk_set_presentation_suspended(bool suspended);
 __attribute__((visibility("default"))) bool azahar_ios_vk_separate_present_queue();
 // Core-only synchronization before destroying the reusable output image.
 void azahar_ios_vk_wait_graphics_idle();

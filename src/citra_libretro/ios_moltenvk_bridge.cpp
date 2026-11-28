@@ -31,6 +31,7 @@ std::atomic<unsigned> present_stage{0};
 std::atomic<unsigned> async_worker_stage{0};
 std::atomic<unsigned> async_submit_stage{0};
 std::atomic<unsigned> accepted_presentations{0};
+std::atomic<bool> presentation_suspended{false};
 #if defined(AZAHAR_IOS_MOLTENVK_BRIDGE)
 thread_local void* present_scheduler = nullptr;
 thread_local bool defer_present = false;
@@ -359,6 +360,12 @@ void AsyncPresentLoop() {
         if (state.async_stop && state.async_phase != AsyncPhase::PresentRequested)
             break;
         if (state.async_phase == AsyncPhase::AcquireRequested) {
+            // System gestures and backgrounding can temporarily make the layer
+            // unavailable. Cancel unstarted acquires, never an in-flight present.
+            if (presentation_suspended.load(std::memory_order_acquire)) {
+                state.async_phase = AsyncPhase::Idle;
+                continue;
+            }
             auto* slot = state.async_slot;
             state.async_phase = AsyncPhase::Acquiring;
             lock.unlock();
@@ -413,7 +420,8 @@ void AsyncPresentLoop() {
             lock.lock();
             if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
                 accepted_presentations.fetch_add(1, std::memory_order_release);
-                if (next && !state.async_stop) {
+                if (next && !state.async_stop &&
+                    !presentation_suspended.load(std::memory_order_acquire)) {
                     state.async_slot = next;
                     state.async_phase = AsyncPhase::AcquireRequested;
                 } else {
@@ -650,6 +658,15 @@ extern "C" void azahar_ios_vk_set_async_present(bool enabled) {
         state.async_present = enabled;
 #else
     (void)enabled;
+#endif
+}
+
+extern "C" void azahar_ios_vk_set_presentation_suspended(bool suspended) {
+#if defined(__APPLE__)
+    // Safe even while a driver call is blocked. Do not lock or touch Vulkan here.
+    presentation_suspended.store(suspended, std::memory_order_release);
+#else
+    (void)suspended;
 #endif
 }
 
@@ -924,6 +941,8 @@ extern "C" int azahar_ios_vk_present_frame(unsigned width, unsigned height, unsi
 #if defined(__APPLE__)
     const PresentStageScope stage_scope;
     present_stage.store(1, std::memory_order_relaxed);
+    if (presentation_suspended.load(std::memory_order_acquire))
+        return 0;
     if (!state.surface || !state.device || !state.image || state.device_failed || !rectangles ||
         !width || !height || !count || count > 2 || !drawable_width || !drawable_height)
         return -1;

@@ -200,6 +200,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @interface AZCirclePad : UIControl
 @property (nonatomic, weak) AzaharEmulator *host;
 @property (nonatomic) CGPoint deflection;
+@property (nonatomic, strong) UITouch *activeTouch;
 - (void)centerStick;
 @end
 
@@ -226,25 +227,33 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     CGPoint p = [touch locationInView:self];
     CGRect b = self.bounds;
     const CGFloat radius = MAX(1.0, MIN(b.size.width, b.size.height) / 2);
-    double x = (p.x - CGRectGetMidX(b)) / radius, y = (p.y - CGRectGetMidY(b)) / radius;
-    const double length = std::max(1.0, std::hypot(x, y));
-    self.deflection = CGPointMake(x / length, y / length);
-    [self.host setCircleX:AZInput::Axis(self.deflection.x) y:AZInput::Axis(self.deflection.y)];
+    const auto [x, y] = AZInput::CircleDeflection(p.x - CGRectGetMidX(b), p.y - CGRectGetMidY(b), radius);
+    self.deflection = CGPointMake(x, y);
+    [self.host setCircleX:AZInput::Axis(x) y:AZInput::Axis(y) pressed:YES];
     [self setNeedsDisplay];
 }
 - (void)centerStick {
+    self.activeTouch = nil;
     self.deflection = CGPointZero;
-    [self.host setCircleX:0 y:0];
+    [self.host setCircleX:0 y:0 pressed:NO];
     [self setNeedsDisplay];
 }
-- (BOOL)beginTracking:(UITouch *)touch withEvent:(UIEvent *)event {
-    [self moveStick:touch]; return YES;
+// Own one touch from down to up, including drags outside the pad bounds.
+// Do not rely on UIControl tracking/cancellation heuristics.
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.activeTouch) return;
+    self.activeTouch = touches.anyObject;
+    if (self.activeTouch) [self moveStick:self.activeTouch];
 }
-- (BOOL)continueTracking:(UITouch *)touch withEvent:(UIEvent *)event {
-    [self moveStick:touch]; return YES;
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.activeTouch && [touches containsObject:self.activeTouch]) [self moveStick:self.activeTouch];
 }
-- (void)endTracking:(UITouch *)touch withEvent:(UIEvent *)event { [self centerStick]; }
-- (void)cancelTrackingWithEvent:(UIEvent *)event { [self centerStick]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.activeTouch && [touches containsObject:self.activeTouch]) [self centerStick];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.activeTouch && [touches containsObject:self.activeTouch]) [self centerStick];
+}
 @end
 
 // Original handheld-inspired controls: separate diamond and cross clusters,
@@ -394,6 +403,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *previousOptions;
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pendingOptions;
 @property (nonatomic) BOOL audioInterrupted;
+@property (nonatomic, weak) UIGestureRecognizer *disabledPopGesture;
+@property (nonatomic) BOOL previousPopEnabled;
+@property (nonatomic) BOOL leavingNavigation;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, strong) UIView *compactToolbar;
 @property (nonatomic, strong) UIButton *compactBack;
@@ -472,6 +484,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.circlePad = [AZCirclePad new];
     self.circlePad.backgroundColor = UIColor.clearColor;
     self.circlePad.opaque = NO;
+    self.circlePad.userInteractionEnabled = YES;
+    self.circlePad.multipleTouchEnabled = NO;
+    self.circlePad.exclusiveTouch = NO;
     self.circlePad.accessibilityLabel = @"Circle Pad";
     controls.stick = self.circlePad;
     [controls addSubview:self.circlePad];
@@ -548,8 +563,21 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     self.compactToolbar.hidden = !landscape;
 }
 
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.leavingNavigation = NO;
+    // A partial back swipe must never pause or unload a running emulator.
+    UIGestureRecognizer *pop = self.navigationController.interactivePopGestureRecognizer;
+    if (pop && self.disabledPopGesture != pop) {
+        self.previousPopEnabled = pop.enabled;
+        self.disabledPopGesture = pop;
+    }
+    pop.enabled = NO;
+    [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+    [self setNeedsUpdateOfHomeIndicatorAutoHidden];
     [self updateCompactNavigation:self.view.bounds.size.width > self.view.bounds.size.height];
 }
 
@@ -662,6 +690,7 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    self.disabledPopGesture.enabled = NO;
     [self refreshControllerVisibility];
     if (self.started) {
         [self maybeStartRestart];
@@ -697,7 +726,9 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 
 - (void)refreshInput {
-    BOOL enabled = !self.leavingGame && !self.settingsOpen && !self.restartPending && !self.audioInterrupted && self.viewIfLoaded.window &&
+    // Audio interruptions affect sound only; a missing interruption-ended
+    // notification must never hold the guest paused after a system gesture.
+    BOOL enabled = !self.leavingGame && !self.settingsOpen && !self.restartPending && self.viewIfLoaded.window &&
         self.navigationController.topViewController == self &&
         UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
     [self.host setPaused:!enabled];
@@ -712,9 +743,14 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
 }
 - (void)appActive:(NSNotification *)note {
     [self.host recordFrontendEvent:@"LIFECYCLE app active"];
+    self.audioInterrupted = NO;
+    [self.host setAudioInterrupted:NO];
+    [self.host refreshAudioRoute];
     [self refreshControllerVisibility];
     [self maybeStartRestart];
     [self refreshInput];
+    // UIKit can deliver the notification before the final active/window state.
+    dispatch_async(dispatch_get_main_queue(), ^{ [self refreshInput]; });
 }
 - (void)audioInterrupted:(NSNotification *)note {
     if (!NSThread.isMainThread) {
@@ -722,8 +758,8 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
         return;
     }
     self.audioInterrupted = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan;
-    if (!self.audioInterrupted) [self.host refreshAudioRoute];
-    [self refreshInput];
+    [self.host recordFrontendEvent:self.audioInterrupted ? @"LIFECYCLE audio interrupted" : @"LIFECYCLE audio interruption ended"];
+    [self.host setAudioInterrupted:self.audioInterrupted];
 }
 - (void)audioReset:(NSNotification *)note { [self.host refreshAudioRoute]; }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
@@ -873,13 +909,21 @@ static UILabel *MakeLabel(NSString *text, CGFloat size) {
     [self.host setPaused:YES];
     [self.host setInputEnabled:NO];
     [self.circlePad centerStick];
-    if (self.isMovingFromParentViewController || self.navigationController.isBeingDismissed) {
-        [self.navigationController setNavigationBarHidden:NO animated:NO];
-        self.restartPending = NO;
-        self.pendingOptions = nil;
-        self.host.delegate = nil;
-        [self.host stop];
-    }
+    self.leavingNavigation = self.isMovingFromParentViewController || self.navigationController.isBeingDismissed;
+    if (self.leavingNavigation) [self.navigationController setNavigationBarHidden:NO animated:NO];
+    // Do not call stop here: UIKit can cancel an interactive disappearance.
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    if (!self.leavingNavigation && self.parentViewController) return;
+    self.disabledPopGesture.enabled = self.previousPopEnabled;
+    self.disabledPopGesture = nil;
+    [self.navigationController setNavigationBarHidden:NO animated:NO];
+    self.restartPending = NO;
+    self.pendingOptions = nil;
+    self.host.delegate = nil;
+    [self.host stop];
 }
 
 - (void)press:(UIButton *)button {

@@ -29,12 +29,23 @@ int main() {
     assert(state.Read(RETRO_DEVICE_ANALOG, 1, 0) == 16384);
     assert(state.Read(RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A));
     assert(state.Read(RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B));
-    state.Circle(32767, 0);
+    state.Circle(32767, 0, true);
+    // Virtual axes are visible immediately, including without a physical pad.
+    assert(state.Read(RETRO_DEVICE_ANALOG, 0, 0) == 32767);
     state.Poll({});
     assert(state.Read(RETRO_DEVICE_ANALOG, 0, 0) == 32767);
     assert(!state.Read(RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED));
     assert(!state.Read(RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A));
     assert(state.Read(RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B));
+    state.Circle(0, 0, true);
+    state.Poll(physical);
+    assert(state.Read(RETRO_DEVICE_ANALOG, 0, 1) == 0);
+    state.Circle(0, 0, false);
+    assert(state.Read(RETRO_DEVICE_ANALOG, 0, 1) == -32767);
+    const auto [dx, dy] = CircleDeflection(30, 0, 30);
+    assert(Axis(dx) == 32767 && Axis(dy) == 0);
+    const auto [cx, cy] = CircleDeflection(0, 0, 30);
+    assert(cx == 0 && cy == 0);
     state.Touch(center);
     state.Enable(false);
     state.Poll(physical);

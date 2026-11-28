@@ -31,10 +31,11 @@
 - (void)stop;
 - (void)setPaused:(BOOL)paused;
 - (void)refreshAudioRoute;
+- (void)setAudioInterrupted:(BOOL)interrupted;
 // Persist frontend events without changing the emulator state.
 - (void)recordFrontendEvent:(NSString *)event;
 - (void)setInputEnabled:(BOOL)enabled;
 - (void)setPointerX:(int16_t)x y:(int16_t)y pressed:(BOOL)down;
-- (void)setCircleX:(int16_t)x y:(int16_t)y;
+- (void)setCircleX:(int16_t)x y:(int16_t)y pressed:(BOOL)held;
 - (void)setButton:(unsigned)identifier pressed:(BOOL)pressed;
 @end

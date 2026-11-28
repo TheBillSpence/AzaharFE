@@ -118,7 +118,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
           "_azahar_ios_vk_readback\n_azahar_ios_vk_readback_frame\n_azahar_ios_vk_readback_failed\n"
           "_azahar_ios_vk_drain_readback\n_azahar_ios_vk_shutdown\n"
           "_azahar_ios_vk_game_loaded\n_azahar_ios_vk_set_metal_layer\n"
-          "_azahar_ios_vk_present_frame\n_azahar_ios_vk_present_extent\n_azahar_ios_vk_present_stage\n_azahar_ios_vk_set_async_present\n_azahar_ios_vk_separate_present_queue\n_azahar_ios_vk_presented_count\n")
+          "_azahar_ios_vk_present_frame\n_azahar_ios_vk_present_extent\n_azahar_ios_vk_present_stage\n_azahar_ios_vk_set_async_present\n_azahar_ios_vk_separate_present_queue\n_azahar_ios_vk_presented_count\n_azahar_ios_vk_set_presentation_suspended\n")
     endif()
   endif()
   target_link_libraries(citra_libretro PRIVATE "-Wl,-exported_symbols_list,${LIBRETRO_EXPORTS_FILE}")

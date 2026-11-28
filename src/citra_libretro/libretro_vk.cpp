@@ -34,7 +34,8 @@ extern "C" void azahar_ios_vk_schedule_present(void* scheduler,
                                                void (*callback)(void*, void*, unsigned), void* slot,
                                                void* next, unsigned index) {
     auto* worker = static_cast<Vulkan::Scheduler*>(scheduler);
-    worker->Record([callback, slot, next, index](vk::CommandBuffer) { callback(slot, next, index); });
+    worker->Record(
+        [callback, slot, next, index](vk::CommandBuffer) { callback(slot, next, index); });
     worker->DispatchWork();
 }
 #endif

@@ -165,6 +165,8 @@ int main() {
         azahar_ios_vk_present_extent(&surface_width, &surface_height);
         Check(azahar_ios_vk_present_stage() == 0, "headless presentation stage is idle");
         Check(azahar_ios_vk_presented_count() == 0, "headless present count is zero");
+        azahar_ios_vk_set_presentation_suspended(true);
+        azahar_ios_vk_set_presentation_suspended(false);
         azahar_ios_vk_set_async_present(true);
         Check(!azahar_ios_vk_separate_present_queue(), "headless has no presentation queue");
         Check(surface_width == 0 && surface_height == 0, "headless surface extent");

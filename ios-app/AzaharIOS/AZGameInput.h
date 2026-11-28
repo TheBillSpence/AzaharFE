@@ -5,11 +5,22 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <utility>
 #include "libretro.h"
 
 namespace AZInput {
 inline int16_t Axis(double value) {
     return static_cast<int16_t>(std::lround(std::clamp(value, -1.0, 1.0) * 32767.0));
+}
+
+// Screen coordinates have positive Y down, matching the LibRetro axis ABI.
+// A small radial deadzone and shorter throw make compact virtual pads usable.
+inline std::pair<double, double> CircleDeflection(double dx, double dy, double radius) {
+    const double travel = std::max(1.0, radius * 0.62);
+    const double magnitude = std::hypot(dx, dy);
+    if (magnitude <= travel * 0.08) return {0, 0};
+    const double scale = std::min(1.0, (magnitude / travel - 0.08) / 0.92) / magnitude;
+    return {dx * scale, dy * scale};
 }
 
 struct Pointer {
@@ -42,6 +53,7 @@ public:
         enabled = value;
         if (!value) {
             onscreen = pad = {};
+            circleHeld = false;
             pending.clear();
             pointer = {};
         }
@@ -52,11 +64,12 @@ public:
         if (down) onscreen.Button(id, true);
         else onscreen.buttons &= ~(1u << id);
     }
-    void Circle(int16_t x, int16_t y) {
+    void Circle(int16_t x, int16_t y, bool held) {
         std::lock_guard lock(mutex);
         if (enabled) {
-            onscreen.axes[0][0] = x;
-            onscreen.axes[0][1] = y;
+            circleHeld = held;
+            onscreen.axes[0][0] = held ? x : 0;
+            onscreen.axes[0][1] = held ? y : 0;
         }
     }
     void Touch(Pointer event) {
@@ -75,10 +88,6 @@ public:
         if (!enabled) return;
         pad = physical;
         pad.buttons |= onscreen.buttons;
-        if (onscreen.axes[0][0] || onscreen.axes[0][1]) {
-            pad.axes[0][0] = onscreen.axes[0][0];
-            pad.axes[0][1] = onscreen.axes[0][1];
-        }
         if (!pending.empty()) {
             pointer = pending.front();
             pending.pop_front();
@@ -88,7 +97,11 @@ public:
         std::lock_guard lock(mutex);
         if (device == RETRO_DEVICE_JOYPAD && index == 0 && id < 16)
             return (pad.buttons >> id) & 1u;
-        if (device == RETRO_DEVICE_ANALOG && index < 2 && id < 2) return pad.axes[index][id];
+        if (device == RETRO_DEVICE_ANALOG && index < 2 && id < 2) {
+            // Touch ownership is explicit, even at the center. Read the latest
+            // drag without waiting for a physical-controller polling cycle.
+            return index == 0 && circleHeld ? onscreen.axes[0][id] : pad.axes[index][id];
+        }
         if (device == RETRO_DEVICE_POINTER && index == 0) {
             if (id == RETRO_DEVICE_ID_POINTER_PRESSED) return pointer.down;
             if (id == RETRO_DEVICE_ID_POINTER_X) return pointer.x;
@@ -99,6 +112,7 @@ public:
 private:
     std::mutex mutex;
     bool enabled = false;
+    bool circleHeld = false;
     Pad onscreen{}, pad{};
     Pointer pointer{};
     std::deque<Pointer> pending;

@@ -109,13 +109,28 @@ int main() {
 
         GCController *synthetic = [GCController controllerWithExtendedGamepad];
         GCExtendedGamepad *gc = synthetic.extendedGamepad;
-        [gc.buttonB setValue:1.0f];
-        [gc.leftShoulder setValue:1.0f];
+        [gc.buttonA setValue:1.0f];
+        [gc.buttonX setValue:1.0f];
+        [gc.leftTrigger setValue:0.5f];
         [gc.leftThumbstick setValueForXAxis:0.5f yAxis:1.0f];
         const auto pad = AZInput::ReadGamepad(gc);
         assert(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_A));
         assert(!(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_B)));
         assert(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_L));
+        assert(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_X));
+        assert(!(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_Y)));
+        assert(!(pad.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_L2)));
+        [gc.buttonA setValue:0.0f];
+        [gc.buttonX setValue:0.0f];
+        [gc.buttonB setValue:1.0f];
+        [gc.buttonY setValue:1.0f];
+        [gc.leftTrigger setValue:0.0f];
+        [gc.leftShoulder setValue:1.0f];
+        const auto alternate = AZInput::ReadGamepad(gc);
+        assert(alternate.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_B));
+        assert(alternate.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_Y));
+        assert(alternate.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_L2));
+        assert(!(alternate.buttons & (1u << RETRO_DEVICE_ID_JOYPAD_L)));
         assert(pad.axes[0][0] == 16384 && pad.axes[0][1] == -32767);
     }
 }
